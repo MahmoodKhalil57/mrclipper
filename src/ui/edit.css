@@ -1,0 +1,33 @@
+/* Creative edit timeline (edit decision list) in the Review panel. */
+
+.edl { display: grid; gap: 6px; padding: 8px 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+.edl.off { opacity: 0.55; }
+.edl-head { display: flex; align-items: center; gap: 8px; }
+.edl-toggle { display: flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--ink-2); cursor: pointer; }
+.edl-toggle input { accent-color: var(--extract); }
+.edl-title { font-size: 13px; color: var(--ink); background: var(--panel-2); border-radius: 5px; padding: 4px 8px; justify-self: start; }
+.edl-track { display: flex; gap: 0; align-items: stretch; min-height: 38px; }
+.edl-piece { display: flex; align-items: stretch; min-width: 34px; flex-basis: 0; }
+.edl-seg {
+  flex: 1; min-width: 0; display: grid; align-content: center; gap: 1px; padding: 4px 6px; border-radius: 5px;
+  background: color-mix(in oklab, var(--extract) 22%, var(--panel)); border: 1px solid color-mix(in oklab, var(--extract) 45%, var(--line));
+  font-size: 10.5px; color: var(--ink-2); overflow: hidden; white-space: nowrap;
+}
+.edl-seg b { font: italic 15px/1 var(--serif); color: var(--ink); }
+.edl-seg span { overflow: hidden; text-overflow: ellipsis; }
+.edl-seg i { font-style: normal; font: 9px var(--mono); color: var(--transcribe); overflow: hidden; text-overflow: ellipsis; }
+.edl-seg.r-hook { background: color-mix(in oklab, var(--transcribe) 22%, var(--panel)); border-color: color-mix(in oklab, var(--transcribe) 50%, var(--line)); }
+.edl-seg.r-payoff { background: color-mix(in oklab, var(--plan) 20%, var(--panel)); border-color: color-mix(in oklab, var(--plan) 50%, var(--line)); }
+.edl-tr { display: grid; place-items: center; width: 16px; flex: none; font-size: 11px; color: var(--muted); }
+.edl-tr.t-cut { color: var(--faint); }
+.edl-tr:not(.t-cut) { color: var(--transcribe); }
+.edl-emph { display: flex; flex-wrap: wrap; gap: 4px; }
+.edl-emph span { font-size: 11.5px; padding: 2px 7px; border-radius: 10px; background: color-mix(in oklab, var(--err) 16%, transparent); color: #ff9d94; }
+
+/* Outline input node and its control wires */
+.outline-rows { display: grid; gap: 4px; }
+.outline-rows > div { display: grid; grid-template-columns: 62px 1fr; gap: 8px; font-size: 11.5px; }
+.outline-rows span { color: var(--faint); }
+.outline-rows b { font-weight: 500; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wire.config .react-flow__edge-path { stroke: var(--ink-2); stroke-dasharray: 2 5; opacity: 0.6; }
+.wire.config.flowing .react-flow__edge-path { opacity: 1; stroke-dasharray: 5 5; }

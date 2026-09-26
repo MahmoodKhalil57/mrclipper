@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.data/
+.wrangler/
+build/
+artifacts/
+.hutch/
+.cottontail-tmp/
+src/desktop/home.gen.ts

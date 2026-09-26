@@ -1,0 +1,155 @@
+/* System One (Jev) mode: engine switch, engine tags, score breakdowns, edge checks. */
+
+:root { --jev: #b9a7ff; }
+
+.engine-switch { display: flex; align-items: center; gap: 2px; padding: 3px 3px 3px 10px; border: 1px solid var(--line); border-radius: 20px; }
+.engine-switch .label { margin-right: 6px; }
+.engine-switch button { background: none; border: 0; border-radius: 16px; padding: 4px 11px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.engine-switch button:hover { color: var(--ink); }
+.engine-switch button.on { background: var(--panel-2); color: var(--ink); }
+.engine-switch button.on:has(.s1) { background: color-mix(in oklab, var(--jev) 18%, var(--panel)); color: #e8e2ff; }
+.s1 { width: 8px; height: 8px; border-radius: 2px; background: var(--jev); transform: rotate(45deg); display: inline-block; }
+
+.engine-tag { font: 9.5px var(--mono); letter-spacing: 0.04em; padding: 3px 7px; border-radius: 5px; white-space: nowrap; background: var(--panel-2); color: var(--muted); }
+.engine-tag.jev { background: color-mix(in oklab, var(--jev) 16%, transparent); color: var(--jev); }
+
+.engine-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.engine-pick button { text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; display: grid; gap: 4px; }
+.engine-pick button b { font-size: 12.5px; font-weight: 600; }
+.engine-pick button span { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+.engine-pick button:hover { border-color: var(--line-2); }
+.engine-pick button.on { border-color: var(--plan); box-shadow: 0 0 0 3px color-mix(in oklab, var(--plan) 14%, transparent); }
+.engine-pick button.on.e-jev, .engine-pick button.on.e-hybrid { border-color: var(--jev); box-shadow: 0 0 0 3px color-mix(in oklab, var(--jev) 14%, transparent); }
+
+.bar { display: inline-block; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; min-width: 60px; }
+.bar i { display: block; height: 100%; background: var(--jev); border-radius: 3px; }
+.bar.low i { background: var(--warn); }
+
+.jev-box { background: color-mix(in oklab, var(--jev) 5%, var(--bg)); border: 1px solid color-mix(in oklab, var(--jev) 25%, var(--line)); border-radius: 8px; padding: 8px 10px; display: grid; gap: 6px; }
+.jev-head { display: flex; align-items: baseline; gap: 6px; }
+.jev-head b { font: italic 22px/1 var(--serif); color: var(--jev); }
+.jev-head .tone { font-size: 11.5px; color: var(--ink-2); text-transform: capitalize; }
+.scores { display: grid; grid-template-columns: 1fr 1fr; gap: 3px 14px; }
+.score { display: grid; grid-template-columns: 84px 1fr 22px; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+.score .bar { min-width: 0; }
+.score .mono { text-align: right; color: var(--ink-2); }
+.score.warn span:first-child { color: var(--err); }
+.score.warn .bar i { background: var(--err); }
+
+.check-row { padding: 8px 10px; border: 1px dashed var(--line-2); border-radius: 10px; }
+.qa { display: grid; gap: 5px; padding: 7px 10px; border-radius: 8px; background: var(--bg); border: 1px solid var(--line); }
+.qa.stale { font-size: 11.5px; }
+.qa-row { display: flex; gap: 14px; font-size: 11.5px; }
+.qa-row .ok { color: var(--ok); }
+.qa-row .warn { color: var(--warn); }
+.suggest { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--ink-2); padding-top: 4px; border-top: 1px dashed var(--line); }
+.suggest .ar { font-size: 12.5px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--muted); }
+
+.runners { font-size: 12px; color: var(--muted); cursor: default; }
+.runners summary { cursor: pointer; color: var(--jev); font-size: 11.5px; }
+.runner { display: grid; grid-template-columns: 92px 70px 1fr; gap: 8px; align-items: center; padding: 3px 0; }
+.runner .ar { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px; }
+
+@media (max-width: 1100px) {
+  .engine-switch .label { display: none; }
+}
+@media (max-width: 640px) {
+  .scores, .engine-pick { grid-template-columns: 1fr; }
+}
+
+/* Hybrid (LLM brief + Jev) and the Edit design step. */
+:root { --design: #d9a6f2; }
+.hy { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: conic-gradient(var(--plan) 0 50%, var(--jev) 50% 100%); }
+.engine-switch button.on.e-hybrid { background: color-mix(in oklab, var(--jev) 14%, var(--panel)); color: #efe6ff; }
+.engine-tag.hybrid { background: linear-gradient(90deg, color-mix(in oklab, var(--plan) 16%, transparent), color-mix(in oklab, var(--jev) 18%, transparent)); color: #d8ccff; }
+.engine-pick { grid-template-columns: 1fr 1fr; }
+
+.gnode.design { --c: var(--design); }
+.wire.flowing.w-design .react-flow__edge-path { stroke: var(--design); }
+.job.design, .slate.design, .tray-item.design { --c: var(--design); }
+
+.design-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.design-chips span { font: 10px var(--mono); padding: 3px 6px; border-radius: 5px; background: color-mix(in oklab, var(--design) 12%, transparent); color: var(--ink-2); }
+.design-chips span b { color: var(--design); font-weight: 600; }
+.design-chips span.pref { background: color-mix(in oklab, var(--jev) 26%, transparent); color: #efe6ff; }
+
+.design-clip { gap: 4px; }
+.design-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); font-size: 12px; flex-wrap: wrap; }
+.design-row b { color: var(--design); font-weight: 600; }
+.design-gap { display: flex; align-items: center; gap: 8px; padding: 2px 8px 2px 18px; font-size: 11px; color: var(--muted); flex-wrap: wrap; }
+.odds { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+.odds span { font: 9.5px var(--mono); padding: 2px 5px; border-radius: 4px; color: var(--faint); background: var(--panel-2); }
+.odds span.on { color: var(--ink); background: color-mix(in oklab, var(--design) 24%, var(--panel)); }
+.warn-text { color: var(--warn); }
+
+.brief .brief-sec { display: grid; gap: 4px; margin-top: 8px; }
+.brief .brief-q { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; font-size: 11.5px; line-height: 1.45; padding: 5px 0; border-top: 1px solid var(--line); }
+.brief .brief-q > span:last-child { grid-column: 1 / -1; color: var(--muted); }
+
+/* LLM nodes: the Brief and the Outline coach, and the feedback loop into the Outline. */
+:root { --llm: #7fb4ff; --brief: var(--llm); --coach: var(--llm); }
+.gnode.brief, .gnode.coach { --c: var(--llm); }
+.gnode.brief .gnode-kicker, .gnode.coach .gnode-kicker { color: var(--llm); }
+.wire.flowing.w-brief .react-flow__edge-path, .wire.flowing.w-coach .react-flow__edge-path { stroke: var(--llm); }
+.wire.loop .react-flow__edge-path { stroke: color-mix(in oklab, var(--llm) 55%, var(--line-2)); stroke-dasharray: 6 5; stroke-width: 2; }
+.wire.loop.flowing .react-flow__edge-path { stroke: var(--llm); stroke-width: 2.6; }
+.react-flow__edge.wire .react-flow__edge-text { fill: var(--muted); font: 10px var(--mono); }
+.react-flow__edge.wire .react-flow__edge-textbg { fill: var(--bg); }
+.loop-port { background: var(--llm) !important; }
+.job.brief, .job.coach, .slate.brief, .slate.coach, .tray-item.brief, .tray-item.coach { --c: var(--llm); }
+.engine-tag.coach { background: color-mix(in oklab, var(--llm) 16%, transparent); color: var(--llm); }
+
+.coach-score { display: flex; align-items: center; gap: 10px; }
+.coach-score b { font: italic 34px/1 var(--serif); color: var(--llm); min-width: 40px; }
+.coach-score span { font-size: 11px; color: var(--muted); line-height: 1.4; }
+.spark { display: flex; align-items: flex-end; gap: 3px; height: 30px; padding: 2px 0; }
+.spark i { flex: 1; max-width: 16px; background: color-mix(in oklab, var(--llm) 40%, var(--line)); border-radius: 2px 2px 0 0; }
+.spark i.on { background: var(--llm); }
+.spark i.none { background: var(--line); }
+
+.ver-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 5px 2px; border-top: 1px solid var(--line); }
+.ver-row.on b { color: var(--llm); }
+.proposal { border-color: color-mix(in oklab, var(--llm) 40%, var(--line)); }
+.hypo { font: italic 17px/1.35 var(--serif); color: var(--ink); }
+.changes { display: grid; gap: 6px; }
+.change { display: grid; gap: 2px; font-size: 12px; line-height: 1.45; padding: 6px 8px; background: var(--bg); border-radius: 7px; border: 1px solid var(--line); }
+.change .tag { justify-self: start; }
+.diff { font: 11px/1.55 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 6px 0; max-height: 420px; overflow: auto; }
+.dl { padding: 0 10px; white-space: pre-wrap; word-break: break-word; }
+.dl span { display: inline-block; width: 14px; color: var(--faint); }
+.dl.dadd { background: color-mix(in oklab, var(--ok) 14%, transparent); color: var(--ink); }
+.dl.ddel { background: color-mix(in oklab, var(--err) 12%, transparent); color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in oklab, var(--err) 50%, transparent); }
+.dl.dctx { color: var(--faint); }
+.dl.fold { color: var(--faint); font-style: italic; padding: 2px 24px; }
+
+/* Clip transcript, rubric and the Jev scorecard. */
+.watch-metrics { display: flex; flex-wrap: wrap; gap: 6px; }
+.watch-metrics span { font-size: 11.5px; padding: 3px 8px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); color: var(--muted); }
+.watch-metrics b { color: var(--ink); font-family: var(--mono); font-weight: 500; }
+.watch-frames { display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 4px; }
+.watch-frames figure { margin: 0; position: relative; border-radius: 5px; overflow: hidden; border: 1px solid var(--line); }
+.watch-frames figure.bad { border-color: var(--warn); box-shadow: 0 0 0 1px var(--warn); }
+.watch-frames img { width: 100%; aspect-ratio: 9 / 16; object-fit: cover; display: block; }
+.watch-frames figcaption { position: absolute; left: 0; right: 0; bottom: 0; font-size: 8.5px; padding: 1px 3px; background: #000a; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.watch-heard { font-size: 13px; line-height: 1.7; color: var(--ink-2); background: var(--bg); border-radius: 7px; padding: 8px 10px; max-height: 140px; overflow: auto; font-family: "IBM Plex Sans Arabic", var(--sans); }
+.brief-q-row { display: grid; gap: 3px; padding: 6px 0; border-top: 1px solid var(--line); font-size: 12px; }
+.brief-q-row .tag { justify-self: start; }
+.variant summary { cursor: pointer; font-size: 12px; padding: 4px 0; }
+.variant pre { white-space: pre-wrap; font: 11px/1.55 var(--mono); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; padding: 8px; margin: 4px 0 0; max-height: 260px; overflow: auto; }
+.sc-head, .sc-row { display: grid; grid-template-columns: 1fr 120px 42px 52px; gap: 8px; align-items: center; font-size: 11.5px; }
+.sc-head { color: var(--faint); font: 9.5px var(--mono); text-transform: uppercase; letter-spacing: 0.05em; }
+.sc-row { padding: 4px 0; border-top: 1px solid var(--line); }
+.sc-bar { display: flex; align-items: center; gap: 6px; }
+.sc-bar .bar { min-width: 70px; }
+
+/* OpenRouter key (stored in the browser; the server keeps it in memory). */
+.keybox { position: relative; }
+.key-btn.missing { color: var(--warn); border-color: color-mix(in oklab, var(--warn) 45%, var(--line)); }
+.key-pop {
+  position: absolute; right: 0; top: calc(100% + 8px); width: 360px; z-index: 50;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px; padding: 12px;
+  display: grid; gap: 9px; box-shadow: 0 24px 50px -20px #000;
+}
+.key-pop .row { display: flex; align-items: center; gap: 8px; }
+.key-pop .field { min-width: 0; font-family: var(--mono); font-size: 12px; }
+.key-now { display: flex; flex-wrap: wrap; gap: 8px; font-size: 11.5px; padding: 6px 8px; background: var(--bg); border-radius: 7px; border: 1px solid var(--line); }

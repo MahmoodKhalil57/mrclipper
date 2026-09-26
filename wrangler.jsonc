@@ -1,0 +1,11 @@
+{
+  // Used only to bundle the Think worker (`wrangler deploy --dry-run`); Bun runs it in Miniflare.
+  "name": "clipdesk-director",
+  "main": "src/worker/director.ts",
+  "compatibility_date": "2026-09-25",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "class_name": "Director", "name": "Director" }]
+  },
+  "migrations": [{ "new_sqlite_classes": ["Director"], "tag": "v1" }]
+}

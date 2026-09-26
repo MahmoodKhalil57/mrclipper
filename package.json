@@ -1,0 +1,39 @@
+{
+  "name": "clipdesk",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun scripts/build.ts",
+    "start": "bun dist/server/main.js",
+    "dev": "bun run build && bun src/server/main.ts",
+    "typecheck": "tsc --noEmit",
+    "desktop": "bun run build && hutch electrobun dev",
+    "desktop:build": "bun run build && hutch electrobun build --env=stable"
+  },
+  "dependencies": {
+    "@ai-sdk/react": "^4.0.117",
+    "@cloudflare/ai-chat": "^0.12.0",
+    "@cloudflare/shell": "^0.4.3",
+    "@cloudflare/think": "^0.19.0",
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "@openrouter/ai-sdk-provider": "^3.1.0",
+    "@xyflow/react": "^12.12.0",
+    "agents": "^0.24.0",
+    "ai": "^7.0.114",
+    "dompurify": "^3.4.16",
+    "electrobun": "^2.0.1",
+    "marked": "^18.0.14",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260925.2",
+    "@types/bun": "^1.4.2",
+    "@types/dompurify": "^3.2.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^7.0.2",
+    "wrangler": "^4.141.0"
+  }
+}
