@@ -12,6 +12,7 @@ import { Panel } from "./Panels";
 import { derivePipeline, nextStep, type StageKey } from "./pipeline";
 import { AGENT_LABEL, shortName, tc, usd } from "./util";
 import { KeyButton } from "./Key";
+import { WorkspaceLine } from "./Workspace";
 
 const store = {
   get<T>(k: string, fallback: T): T {
@@ -192,7 +193,7 @@ export function App() {
           <span className="brand-mark" aria-hidden />
           <span className="brand-name">Clipdesk</span>
         </div>
-        <ProjectSwitcher videos={library?.videos ?? []} current={video} onPick={(n) => (setProject(n), setStage(null))} onAdd={() => setAdding(true)} />
+        <ProjectSwitcher videos={library?.videos ?? []} current={video} onPick={(n) => (setProject(n), setStage(null))} onAdd={() => setAdding(true)} toast={toast} />
         <div className="spacer" />
         <div className="engine-switch" role="radiogroup" aria-label="Crew engine"
           title="Who does the thinking. LLM and System One use OpenRouter; WebMCP hands it to the agent in your browser and makes no OpenRouter calls.">
@@ -250,7 +251,7 @@ export function App() {
             <PipelineCanvas p={p} h={handlers} selected={stage} next={next.stage} fitKey={`${dock}-${!!stage}`} />
           </>
         ) : library ? (
-          <div className="hero-wrap"><AddVideo hero onAdded={onAdded} importJob={importJob} /></div>
+          <div className="hero-wrap"><AddVideo hero onAdded={onAdded} importJob={importJob} /><WorkspaceLine toast={toast} /></div>
         ) : null}
 
         {running.length > 0 && (
@@ -333,7 +334,7 @@ function Steps({ p, current, onPick }: { p: ReturnType<typeof derivePipeline>; c
   );
 }
 
-function ProjectSwitcher({ videos, current, onPick, onAdd }: { videos: Video[]; current: Video | null; onPick: (n: string) => void; onAdd: () => void }) {
+function ProjectSwitcher({ videos, current, onPick, onAdd, toast }: { videos: Video[]; current: Video | null; onPick: (n: string) => void; onAdd: () => void; toast: (m: string, kind?: "err" | "ok") => void }) {
   const [open, setOpen] = useState(false);
   useEffect(() => {
     if (!open) return;
@@ -368,6 +369,7 @@ function ProjectSwitcher({ videos, current, onPick, onAdd }: { videos: Video[]; 
             </button>
           ))}
           <button className="switch-item add" onClick={() => (onAdd(), setOpen(false))}>+ Add another video</button>
+          <WorkspaceLine toast={toast} />
         </div>
       )}
     </div>

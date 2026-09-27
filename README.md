@@ -222,12 +222,33 @@ Run the Hutch commands from PowerShell, not Git Bash. Git Bash's GNU `tar` can't
 
 ## The desktop app
 
-`src/desktop/index.ts` is the Electrobun main process, running on the Bun runtime (`mainProcess: "bun"`). It starts the same server in-process and opens a native WebView2 window on it. The built app reads `dist/`, `wrangler.jsonc` and `node_modules/wrangler` from this folder. The build bakes that path into `src/desktop/home.gen.ts`, and you can override it with `CLIPDESK_HOME`. So the installer works on machines where this app folder exists; it doesn't bundle wrangler and workerd yet.
+`src/desktop/index.ts` is the Electrobun main process, running on the Bun runtime (`mainProcess: "bun"`). It starts the same server in-process and opens a native WebView2 window on it.
+
+**The installer is standalone.** It needs nothing installed on the machine and no setup: no Node, ffmpeg, Python or `.env`. `bun run desktop:build` runs `scripts/vendor.ts`, which collects everything the app runs into `vendor/`. Electrobun then packs it next to the app, under `Resources/app`:
+
+| Bundled | What | Replaces |
+|---|---|---|
+| `dist/ui`, `dist/worker` | the UI and the Director bundle | the source checkout |
+| `runtime/workerd.exe` | Cloudflare's Workers runtime, running the Director directly (`src/server/workerd.ts` writes its config) | Node + `wrangler dev` |
+| `runtime/ffmpeg.exe` | gyan.dev essentials build: libass, fribidi and harfbuzz for Arabic captions, x264. Duration and size come from `ffmpeg -i`, so no ffprobe. | ffmpeg/ffprobe on `PATH` |
+| `runtime/yt-dlp.exe` | YouTube imports and captions | `tools/yt-dlp.exe` |
+| `runtime/faces/` | `tools/faces.py` compiled with PyInstaller (OpenCV YuNet) | the Python venv |
+| `models/`, `templates/` | the face model and the starter outline | `.data/models`, your own outline |
+
+Where things live when installed:
+- **App state** goes to `%LOCALAPPDATA%\Clipdesk`: settings, thumbnails, Director storage, and the workspace choice.
+- **The workspace** is `Documents\Clipdesk` by default: videos, `transcripts/`, `clips/` and `clip_outline.md`. It's created on first launch with the starter outline. **Change…** under the project menu (or on the empty-workspace screen) points the app at another folder, such as an existing project, from the next launch.
+- **The OpenRouter key** is asked for in the app (see above).
+
+The installer is about 350 MB unpacked. Most of it is workerd, ffmpeg and OpenCV.
+
+Running from source (`bun run start`, `bun run desktop`) still uses the checkout. It uses workerd from `node_modules` (set `CLIPDESK_WRANGLER=1` to use `wrangler dev` instead), plus ffmpeg and yt-dlp from `PATH` or `tools/`, and the venv for face detection.
 
 ## Settings
 
 | Variable | Default | |
 |---|---|---|
 | `CLIPDESK_PORT` | 4477 | UI, API and MCP |
-| `CLIPDESK_WORKER_PORT` | 8799 | internal wrangler port |
+| `CLIPDESK_WORKER_PORT` | 8799 | internal Director (workerd) port |
+| `CLIPDESK_DATA` | `.data` | app state (the desktop app uses `%LOCALAPPDATA%\Clipdesk`) |
 | `CLIP_ROOT` | `..` | project folder with videos, `transcripts/`, `clips/` |

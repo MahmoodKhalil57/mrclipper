@@ -6,7 +6,7 @@ import { ApprovalRequired, startAgentPlan, startBrief, startCheck, startCoach, s
 import { applyProposal, discardProposal, restoreVersion, versionText } from "./agents/coach";
 import { readBriefCache } from "./agents/plan-jev";
 import { clearBrowserKey, keyInfo, setBrowserKey } from "./key";
-import { DATA_DIR, ROOT, VIDEO_EXTS } from "./config";
+import { DATA_DIR, ROOT, VIDEO_EXTS, WORKSPACE_CONFIG } from "./config";
 import { cancelJob, getJob } from "./jobs";
 import { readClipData, readTranscript, rel, resolveVideo, runDir, writeClipData } from "./library";
 import { run } from "./lib";
@@ -156,6 +156,24 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
         writeClipData(script, data);
       }
       return json({ review: readReview(runId) });
+    }
+
+    // ── Workspace: where videos, transcripts, clips and the outline live ──
+    if (path === "/api/workspace") {
+      if (m === "POST") {
+        // Desktop app only: remember another folder; the server reads its paths at start, so it applies on relaunch.
+        if (!WORKSPACE_CONFIG) return fail("Set CLIP_ROOT to change the workspace when running from source.");
+        const root = String((await body()).root ?? "").trim().replace(/^"|"$/g, "");
+        if (!/^([a-zA-Z]:[\\/]|\\\\|\/)/.test(root)) return fail(String.raw`Use a full folder path, like C:\Users\you\Videos\Clips`);
+        mkdirSync(root, { recursive: true });
+        await Bun.write(WORKSPACE_CONFIG, JSON.stringify({ root }, null, 2));
+        return json({ root, restart: true });
+      }
+      return json({ root: ROOT, data: DATA_DIR, desktop: !!WORKSPACE_CONFIG });
+    }
+    if (path === "/api/workspace/open" && m === "POST") {
+      Bun.spawn(process.platform === "win32" ? ["explorer.exe", ROOT] : [process.platform === "darwin" ? "open" : "xdg-open", ROOT]);
+      return json({ ok: true });
     }
 
     // ── OpenRouter key (held in memory; the browser is the source of truth) ──

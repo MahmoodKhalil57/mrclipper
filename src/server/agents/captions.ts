@@ -3,7 +3,7 @@
 // word timings just like the Gemini+Whisper path.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, parse } from "node:path";
-import { ROOT } from "../config";
+import { ROOT, toolPath } from "../config";
 import type { JobContext } from "../jobs";
 import { transcriptDir } from "../library";
 import { run } from "../lib";
@@ -20,10 +20,10 @@ async function fetchCaptions(ctx: JobContext, video: string, lang: string): Prom
   if (existing) return join(dir, existing);
   const id = youtubeId(video);
   if (!id) throw new Error("No YouTube id in the file name, so there are no captions to import. Name it like 'Title [VIDEOID].mp4' or use another engine to transcribe.");
-  const bundled = join(ROOT, "tools", "yt-dlp.exe");
+  const ytdlp = toolPath("yt-dlp");
   ctx.log(`Fetching YouTube captions for ${id} (${lang})`);
   const r = await run(
-    [existsSync(bundled) ? bundled : "yt-dlp", "--skip-download", "--write-subs", "--write-auto-subs", "--sub-langs", `${lang},${lang}-orig`,
+    [ytdlp, "--skip-download", "--write-subs", "--write-auto-subs", "--sub-langs", `${lang},${lang}-orig`,
       "--sub-format", "json3", "-o", join(dir, "captions"), `https://www.youtube.com/watch?v=${id}`],
     { signal: ctx.signal },
   );

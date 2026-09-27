@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { APP_DIR } from "../config";
 import type { JobContext } from "../jobs";
-import { pool, run } from "../lib";
+import { pool, probeMedia, run } from "../lib";
 
 export type Face = [number, number, number, number, number]; // x0 y0 x1 y1 score, normalised
 /** Keyframes [seconds from the part's start, in source time; horizontal centre 0..1]. */
@@ -22,19 +22,21 @@ export type Framing =
 
 /** Source width / height. */
 export async function probeAspect(video: string): Promise<number> {
-  const r = await run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", video]);
-  const [w, h] = r.stdout.trim().split(",").map(Number);
+  const { width: w, height: h } = await probeMedia(video).catch(() => ({ width: 0, height: 0 }));
   return w && h ? w / h : 16 / 9;
 }
 
+// The desktop app ships faces.py compiled to runtime/faces/faces.exe (no Python needed) and the model
+// in models/; a development checkout uses the venv and model under .data/.
+const FACES_EXE = [join(APP_DIR, "runtime", "faces", "faces.exe")].find(existsSync);
 const PYTHON = [join(APP_DIR, ".data", "py", "Scripts", "python.exe"), join(APP_DIR, ".data", "py", "bin", "python")].find(existsSync);
-const MODEL = join(APP_DIR, ".data", "models", "face_detection_yunet_2023mar.onnx");
-export const faceDetectionAvailable = () => !!PYTHON && existsSync(MODEL);
+const MODEL = [join(APP_DIR, "models", "face_detection_yunet_2023mar.onnx"), join(APP_DIR, ".data", "models", "face_detection_yunet_2023mar.onnx")].find(existsSync) ?? "";
+export const faceDetectionAvailable = () => (!!FACES_EXE || !!PYTHON) && !!MODEL;
 
 /** Run YuNet (tools/faces.py) on frame files. Null if detection isn't set up or fails. */
 export async function runFaceDetector(ctx: JobContext, frames: string[]): Promise<Map<string, Face[]> | null> {
   if (!faceDetectionAvailable() || !frames.length) return null;
-  const proc = Bun.spawn([PYTHON!, join(APP_DIR, "tools", "faces.py")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn(FACES_EXE ? [FACES_EXE] : [PYTHON!, join(APP_DIR, "tools", "faces.py")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   proc.stdin.write(JSON.stringify({ model: MODEL, frames, min_score: 0.6 }));
   proc.stdin.end();
   const [out, err, code] = [await new Response(proc.stdout).text(), await new Response(proc.stderr).text(), await proc.exited];

@@ -3,6 +3,7 @@ import { existsSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { APP_DIR, DATA_DIR, MODELS, PORT, ROOT, WORKER_PORT } from "./config";
 import { INTERNAL_TOKEN, keyStatus, openrouterKey } from "./key";
+import { workerdBinary, writeWorkerdConfig } from "./workerd";
 import { listJobs, onEvent, sysLog } from "./jobs";
 import { OUTLINE_FILE, historyPaths, listRuns, listVideos, readText, rel, safePath } from "./library";
 import { AGENTS, handleMcp, type McpAgentKey } from "./mcp";
@@ -26,17 +27,26 @@ function startWorker() {
   workerState = "starting";
   // MCP_BASE points the worker back at this server. It has no key of its own: it asks this server
   // for the browser's key on every model call, with a per-launch token (see key.ts).
-  const envFile = join(DATA_DIR, "worker.env");
-  writeFileSync(envFile, `MCP_BASE=${SELF_URL}\nINTERNAL_TOKEN=${INTERNAL_TOKEN}\nDIRECTOR_MODEL=${MODELS.director}\n`);
-  worker = Bun.spawn(
-    [
-      "node", join(APP_DIR, "node_modules", "wrangler", "bin", "wrangler.js"), "dev", WORKER_BUNDLE,
-      "--no-bundle", "--config", join(APP_DIR, "wrangler.jsonc"), "--env-file", envFile,
-      "--ip", "127.0.0.1", "--port", String(WORKER_PORT), "--persist-to", join(DATA_DIR, "wrangler"),
-      "--show-interactive-dev-session=false", "--log-level", "warn",
-    ],
-    { cwd: APP_DIR, stdout: "pipe", stderr: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
-  );
+  const vars = { MCP_BASE: SELF_URL, INTERNAL_TOKEN, DIRECTOR_MODEL: MODELS.director };
+  const workerd = process.env.CLIPDESK_WRANGLER ? null : workerdBinary();
+  if (workerd) {
+    // workerd directly: one binary, no Node or wrangler (what the desktop app ships).
+    const dir = join(DATA_DIR, "workerd");
+    const config = writeWorkerdConfig({ bundle: WORKER_BUNDLE, dir, port: WORKER_PORT, vars });
+    worker = Bun.spawn([workerd, "serve", config, "--experimental"], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+  } else {
+    const envFile = join(DATA_DIR, "worker.env");
+    writeFileSync(envFile, Object.entries(vars).map(([k, v]) => `${k}=${v}\n`).join(""));
+    worker = Bun.spawn(
+      [
+        "node", join(APP_DIR, "node_modules", "wrangler", "bin", "wrangler.js"), "dev", WORKER_BUNDLE,
+        "--no-bundle", "--config", join(APP_DIR, "wrangler.jsonc"), "--env-file", envFile,
+        "--ip", "127.0.0.1", "--port", String(WORKER_PORT), "--persist-to", join(DATA_DIR, "wrangler"),
+        "--show-interactive-dev-session=false", "--log-level", "warn",
+      ],
+      { cwd: APP_DIR, stdout: "pipe", stderr: "pipe", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } },
+    );
+  }
   for (const stream of [worker.stdout, worker.stderr] as ReadableStream<Uint8Array>[]) pipeLines(stream);
   worker.exited.then((code) => {
     workerState = "down";

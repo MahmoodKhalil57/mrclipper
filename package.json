@@ -8,7 +8,8 @@
     "dev": "bun run build && bun src/server/main.ts",
     "typecheck": "tsc --noEmit",
     "desktop": "bun run build && hutch electrobun dev",
-    "desktop:build": "bun run build && hutch electrobun build --env=stable"
+    "vendor": "bun scripts/vendor.ts",
+    "desktop:build": "bun run build && bun scripts/vendor.ts && hutch electrobun build --env=stable"
   },
   "dependencies": {
     "@ai-sdk/react": "^4.0.117",

@@ -16,7 +16,16 @@ function findAppDir(): string {
 export const APP_DIR = process.env.CLIPDESK_HOME ? resolve(process.env.CLIPDESK_HOME) : findAppDir();
 /** The clipping project root: videos, transcripts/, clips/, clip_outline.md, .env */
 export const ROOT = resolve(process.env.CLIP_ROOT ?? join(APP_DIR, ".."));
-export const DATA_DIR = join(APP_DIR, ".data");
+/** App state (settings, thumbnails, Director storage). The desktop app keeps it in the user's app data. */
+export const DATA_DIR = resolve(process.env.CLIPDESK_DATA ?? join(APP_DIR, ".data"));
+/** Set by the desktop app: where the workspace choice is saved (see desktop/index.ts). */
+export const WORKSPACE_CONFIG = process.env.CLIPDESK_WORKSPACE_CONFIG ?? "";
+
+/** A helper binary: bundled with the desktop app (runtime/), in the project's tools/, or on PATH. */
+export function toolPath(name: string): string {
+  const exe = process.platform === "win32" ? `${name}.exe` : name;
+  return [join(APP_DIR, "runtime", exe), join(ROOT, "tools", exe), join(APP_DIR, "tools", exe)].find(existsSync) ?? name;
+}
 export const ENV_FILE = join(ROOT, ".env");
 
 function loadEnv(file: string): Record<string, string> {

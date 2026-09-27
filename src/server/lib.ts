@@ -1,4 +1,7 @@
 import { MISSING_KEY, openrouterKey } from "./key";
+import { toolPath } from "./config";
+
+const BUNDLED = new Set(["ffmpeg", "yt-dlp"]);
 import { assertCloud } from "./cloud";
 
 /** A transcript line. `words` (measured per-word times) is present when the timing pass aligned it. */
@@ -31,7 +34,9 @@ export async function run(
   opts: { cwd?: string; onStdout?: (line: string) => void; signal?: AbortSignal } = {},
 ) {
   opts.signal?.throwIfAborted();
-  const proc = Bun.spawn(cmd, { cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
+  // The desktop app ships its own ffmpeg and yt-dlp; use them over whatever is (or isn't) on PATH.
+  const exe = BUNDLED.has(cmd[0]) ? toolPath(cmd[0]) : cmd[0];
+  const proc = Bun.spawn([exe, ...cmd.slice(1)], { cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
   const kill = () => proc.kill();
   opts.signal?.addEventListener("abort", kill, { once: true });
   const stderr = new Response(proc.stderr).text();
@@ -54,10 +59,20 @@ export async function run(
   return { code, stdout, stderr: await stderr };
 }
 
+/**
+ * Duration and frame size from ffmpeg's own header dump (`ffmpeg -i`), so the app ships one binary
+ * instead of ffmpeg + ffprobe. ffmpeg exits non-zero without an output file; the header is still printed.
+ */
+export async function probeMedia(path: string): Promise<{ duration: number; width: number; height: number }> {
+  const r = await run(["ffmpeg", "-hide_banner", "-nostdin", "-i", path]);
+  const d = r.stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  if (!d) throw new Error(`ffmpeg couldn't read ${path}: ${r.stderr.trim().split(/\r?\n/).pop()}`);
+  const v = r.stderr.match(/Stream #\d+:\d+[^\n]*Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/);
+  return { duration: Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]), width: v ? Number(v[1]) : 0, height: v ? Number(v[2]) : 0 };
+}
+
 export async function probeDuration(path: string): Promise<number> {
-  const r = await run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path]);
-  if (r.code !== 0) throw new Error(`ffprobe failed: ${r.stderr}`);
-  return Number.parseFloat(r.stdout.trim());
+  return (await probeMedia(path)).duration;
 }
 
 export type ChatResult = { content: string; model: string; usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number } };

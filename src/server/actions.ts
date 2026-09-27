@@ -13,7 +13,7 @@ import { coachOutlineJev } from "./agents/coach-jev";
 import { buildRubric } from "./agents/rubric";
 import { watchClips } from "./agents/watch";
 import { transcribe, type TranscribeInput } from "./agents/transcribe";
-import { ROOT } from "./config";
+import { ROOT, toolPath } from "./config";
 import { listJobs, startJob, type AgentName, type Job } from "./jobs";
 import { readText, readTranscript, rel, resolveVideo, runDir } from "./library";
 import { run } from "./lib";
@@ -140,8 +140,7 @@ export function startExtract(args: ExtractInput): Job {
 /** Download a video with the project's yt-dlp into downloads/. */
 export function startImport(url: string): Job {
   if (!/^https?:\/\//i.test(url)) throw new Error("Paste a full http(s) link");
-  const bundled = join(ROOT, "tools", "yt-dlp.exe");
-  const ytdlp = existsSync(bundled) ? bundled : "yt-dlp";
+  const ytdlp = toolPath("yt-dlp");
   const outDir = join(ROOT, "downloads");
   mkdirSync(outDir, { recursive: true });
 
