@@ -82,11 +82,15 @@ export type EditStyle = {
   effects?: string[];
   /** Sounds the outline allows: any (absent), none ([]), or the ones it names. */
   sounds?: string[];
-  music?: { on: boolean; file?: string; volume: number; mood: string };
+  /** source: "files" uses your tracks in assets/music; "generate" has Lyria make a score for each clip (the
+   *  Music step; model "pro": $0.08 a clip, "clip": 30 s for $0.04). */
+  music?: { on: boolean; file?: string; volume: number; mood: string; source?: "files" | "generate"; model?: "pro" | "clip" };
   /** How much the planner does: a few well-placed effects, a normal amount, or a dense, busy edit. */
   intensity?: "subtle" | "moderate" | "heavy";
   /** The clip's loudness, mastered in LUFS (short-form platforms play at about -14), or null to leave it. */
   loudness?: number | null;
+  /** Hiss and rumble taken out of the source's voice before mixing. */
+  cleanup?: "off" | "light" | "strong";
 };
 
 // ── outline → style ────────────────────────────────────────────────
@@ -132,6 +136,7 @@ export function readEditStyle(outline: string): EditStyle {
   const music = s("Background music");
   const musicFile = music?.match(/`([^`]+)`/)?.[1] ?? music?.match(/[\w-]+\.(mp3|wav|ogg|m4a|flac|aac|opus)/i)?.[0];
   const vol = s("Music volume")?.toLowerCase() ?? "";
+  const source = (s("Music source") ?? "").toLowerCase();
   const intensity = (s("Effect intensity") ?? s("Editing intensity") ?? "").toLowerCase();
   return {
     maxSegments: Math.max(1, Math.min(12, num(s("Max segments per clip"), 5))),
@@ -167,10 +172,20 @@ export function readEditStyle(outline: string): EditStyle {
       ...(musicFile ? { file: musicFile } : {}),
       volume: /high|loud/.test(vol) ? 0.4 : /medium|normal/.test(vol) ? 0.28 : /\d/.test(vol) && num(vol, 0) > 1 ? Math.min(1, num(vol, 20) / 100) : 0.18,
       mood: (s("Music mood") ?? "").slice(0, 200),
+      source: /generat|lyria|\bai\b|make|compose/.test(source) ? "generate" : "files",
+      model: /clip|30|short|loop/.test(source) ? "clip" : "pro",
     },
     intensity: /subtle|minimal|light|few/.test(intensity) ? "subtle" : /heavy|dense|busy|maximal|lots/.test(intensity) ? "heavy" : "moderate",
-    loudness: /^\s*(off|no|none)/i.test(s("Loudness") ?? "") ? null : -Math.min(30, Math.max(8, Math.abs(num(s("Loudness"), 14)))),
+    loudness: /^\s*(off|no|none)\b/i.test(s("Loudness") ?? "") ? null : -Math.min(30, Math.max(8, Math.abs(num(s("Loudness"), 14)))),
+    cleanup: /^\s*(off|no|none)\b/i.test(s("Voice cleanup") ?? "") ? "off" : /strong|heavy|more/i.test(s("Voice cleanup") ?? "") ? "strong" : "light",
   };
+}
+
+/** A take's editing settings: frozen when it was made, plus settings added to mrClipper since then, read
+ *  from the outline the take was made with (so an older take still gets loudness, music source…). */
+export function takeStyle(takeOutline: string, frozen?: EditStyle): EditStyle {
+  const now = readEditStyle(takeOutline);
+  return frozen ? { ...now, ...frozen, music: { ...now.music!, ...(frozen.music ?? {}) } } : now;
 }
 
 // ── helpers over the transcript ───────────────────────────────────

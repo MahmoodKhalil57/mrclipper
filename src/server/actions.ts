@@ -6,6 +6,9 @@ import { buildBrief } from "./agents/brief";
 import { checkTake } from "./agents/check";
 import { coachOutline } from "./agents/coach";
 import { designEdits } from "./agents/design";
+import { titleTake } from "./agents/titles";
+import { visionTranscript } from "./agents/vision";
+import { scoreTake } from "./effects/music";
 import { pickClips } from "./agents/pick";
 import { readPickSettings, savePickSettings } from "./agents/take";
 import { analyzeReference, newReference, pendingGuide, readReference, saveReference } from "./agents/reference";
@@ -79,7 +82,18 @@ export function startRefImport(url: string): Job {
 export function startTranscript(ref: string): Job {
   const video = resolveVideo(ref);
   const input = { video: basename(video) };
-  return runningDuplicate("transcript", input) ?? startJob("transcript", `Transcribe ${basename(video)}`, input, (ctx) => transcribe(ctx, video, input));
+  // Speech only: what's on screen is its own step (Shots).
+  return runningDuplicate("transcript", input) ?? startJob("transcript", `Transcribe ${basename(video)}`, input, (ctx) => transcribe(ctx, video, { ...input, vision: false }));
+}
+
+/** Shots: the vision transcript (shot cuts, a frame per shot labelled by a vision model, faces and 9:16 framing). */
+export function startShots(ref: string): Job {
+  const video = resolveVideo(ref);
+  const input = { video: basename(video) };
+  return runningDuplicate("shots", input) ?? startJob("shots", `Shots in ${basename(video)}`, input, async (ctx) => {
+    const vt = await visionTranscript(ctx, video);
+    return { shots: vt.shots.length, labelled: vt.shots.filter((s) => s.kind).length };
+  });
 }
 
 export function startRefStyle(): Job {
@@ -105,6 +119,16 @@ export function startPick(args: { video: string; direction?: string; count?: num
   const s = args.direction !== undefined || args.count !== undefined ? savePickSettings(video, args) : readPickSettings(video);
   const input = { video: basename(video), ...(s.direction ? { direction: s.direction } : {}), ...(s.count ? { count: s.count } : {}) };
   return runningDuplicate("pick", input) ?? startJob("pick", `Pick clips from ${basename(video)}`, input, (ctx) => pickClips(ctx, video, { video: basename(video) }));
+}
+
+export function startTitles(run: string): Job {
+  runDir(run);
+  return runningDuplicate("titles", { run }) ?? startJob("titles", "Hook cards", { run }, (ctx) => titleTake(ctx, run));
+}
+
+export function startMusic(args: { run: string; only?: number[] }): Job {
+  runDir(args.run);
+  return runningDuplicate("music", args) ?? startJob("music", "Score the clips", { ...args }, (ctx) => scoreTake(ctx, args.run, { only: args.only }));
 }
 
 export function startDesign(run: string): Job {

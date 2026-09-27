@@ -1,5 +1,6 @@
-// The workflow canvas: one column per phase, thirteen nodes, one loop back into the Outline.
-// Steps inside a phase stack top to bottom (Make runs Pick → Design → Render → Check downwards).
+// The workflow canvas: one column per phase (Make has two), sixteen nodes, one loop back into the Outline.
+// Steps inside a phase stack top to bottom, and Make reads like two columns of text: Pick clips → Hook
+// cards → Music down the first, then Design edits → Render → Check down the second.
 // Every node has the same anatomy: phase · who does the work, title, state, a few facts, why it's in
 // that state, and one action. States and facts come from the server (workflow.ts).
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -16,14 +17,15 @@ export const PHASES = ["Inputs", "Understand", "Brief", "Make", "Review", "Learn
 export const WHO_LABEL: Record<WfNode["who"], string> = { you: "You", transcriber: "Transcriber", llm: "LLM writes", jev: "Jev judges", code: "Code" };
 export const NODE_TITLE: Record<NodeId, string> = {
   source: "Source video", outline: "Outline", refclip: "Reference clip", guide: "Copy guide",
-  transcript: "Transcript", refstyle: "Reference style", brief: "Brief",
-  pick: "Pick clips", design: "Design edits", render: "Render", check: "Check",
+  transcript: "Transcript", shots: "Shots", refstyle: "Reference style", brief: "Brief",
+  pick: "Pick clips", titles: "Hook cards", music: "Music", design: "Design edits", render: "Render", check: "Check",
   review: "Review", coach: "Coach",
 };
 /** The one action each node offers: its first run, and a run after an input changed (inputs and Review open their panel). */
 const ACTION: Partial<Record<NodeId, [first: string, outOfDate: string]>> = {
-  transcript: ["Transcribe", "Redo missing"], refstyle: ["Analyse", "Re-analyse"], brief: ["Write brief", "Rewrite"],
-  pick: ["Pick clips", "New take"], design: ["Design", "Redesign"], render: ["Render", "Re-render"], check: ["Check", "Re-check"],
+  transcript: ["Transcribe", "Redo missing"], shots: ["Find shots", "Redo"], refstyle: ["Analyse", "Re-analyse"], brief: ["Write brief", "Rewrite"],
+  pick: ["Pick clips", "New take"], titles: ["Write hooks", "Rewrite"], music: ["Score clips", "Score again"],
+  design: ["Design", "Redesign"], render: ["Render", "Re-render"], check: ["Check", "Re-check"],
   coach: ["Coach", "Coach again"],
 };
 
@@ -34,22 +36,26 @@ export type CanvasHandlers = {
   applyProposal: (id: string) => void;
 };
 
-const X = [0, 330, 660, 990, 1320, 1650];
+const X = [0, 330, 660, 990, 1320, 1650, 1980];
+/** Where each phase's header sits and how wide it is (Make spans two columns). */
+const PHASE_AT = [{ x: X[0], w: 272 }, { x: X[1], w: 272 }, { x: X[2], w: 272 }, { x: X[3], w: 602 }, { x: X[5], w: 272 }, { x: X[6], w: 272 }];
 /** The bottom row: the Outline, Check, Review and Coach, so the loop runs along the bottom back into the Outline. */
 const LOOP_Y = 820;
 const LAYOUT: Record<NodeId, { x: number; y: number }> = {
   source: { x: X[0], y: 0 }, refclip: { x: X[0], y: 310 }, guide: { x: X[0], y: 600 }, outline: { x: X[0], y: LOOP_Y },
-  transcript: { x: X[1], y: 0 }, refstyle: { x: X[1], y: 455 },
+  transcript: { x: X[1], y: 0 }, shots: { x: X[1], y: 275 }, refstyle: { x: X[1], y: 560 },
   brief: { x: X[2], y: 590 },
-  pick: { x: X[3], y: 0 }, design: { x: X[3], y: 275 }, render: { x: X[3], y: 550 }, check: { x: X[3], y: LOOP_Y },
-  review: { x: X[4], y: LOOP_Y },
-  coach: { x: X[5], y: LOOP_Y },
+  pick: { x: X[3], y: 0 }, titles: { x: X[3], y: 275 }, music: { x: X[3], y: 550 },
+  design: { x: X[4], y: 0 }, render: { x: X[4], y: 410 }, check: { x: X[4], y: LOOP_Y },
+  review: { x: X[5], y: LOOP_Y },
+  coach: { x: X[6], y: LOOP_Y },
 };
 /** Which ports each node has: inputs on the left (or top, inside Make), outputs on the right (or bottom). */
 const PORTS: Record<NodeId, { left?: true; top?: true; right?: true; bottom?: "down" | "loop"; loopIn?: true }> = {
   source: { right: true }, refclip: { right: true }, guide: { right: true }, outline: { right: true, loopIn: true },
-  transcript: { left: true, right: true }, refstyle: { left: true, right: true }, brief: { left: true, right: true },
-  pick: { left: true, bottom: "down" }, design: { top: true, bottom: "down" }, render: { top: true, bottom: "down" },
+  transcript: { left: true, right: true }, shots: { left: true, right: true }, refstyle: { left: true, right: true }, brief: { left: true, right: true },
+  pick: { left: true, bottom: "down" }, titles: { top: true, bottom: "down" }, music: { top: true, right: true },
+  design: { left: true, bottom: "down" }, render: { top: true, bottom: "down" },
   check: { top: true, left: true, right: true }, review: { left: true, right: true }, coach: { left: true, bottom: "loop" },
 };
 const ORDER = Object.keys(LAYOUT) as NodeId[];
@@ -57,14 +63,18 @@ const ORDER = Object.keys(LAYOUT) as NodeId[];
 type Wire = { from: NodeId; to: NodeId; kind?: "config" | "loop"; sh?: string; th?: string; label?: string; offset?: number };
 const WIRES: Wire[] = [
   { from: "source", to: "transcript" },
+  { from: "source", to: "shots" },
   { from: "refclip", to: "refstyle" },
   { from: "guide", to: "refstyle", kind: "config" },
   { from: "outline", to: "brief", kind: "config" },
   { from: "transcript", to: "brief" },
   { from: "refstyle", to: "brief" },
   { from: "transcript", to: "pick" },
+  { from: "shots", to: "pick" },
   { from: "brief", to: "pick" },
-  { from: "pick", to: "design", sh: "down", th: "up" },
+  { from: "pick", to: "titles", sh: "down", th: "up" },
+  { from: "titles", to: "music", sh: "down", th: "up" },
+  { from: "music", to: "design" },
   { from: "design", to: "render", sh: "down", th: "up" },
   { from: "render", to: "check", sh: "down", th: "up" },
   { from: "brief", to: "check", kind: "config" },
@@ -83,12 +93,12 @@ function StepButton({ d }: { d: NodeData }) {
   const { node, job, h } = d;
   if (node.state === "running" && job?.status === "running") return <button className="btn sm danger" onClick={() => h.stop(job.id)}>■ Stop</button>;
   const labels = ACTION[node.id];
-  if (!labels) return <button className="btn sm" onClick={() => h.open(node.id)}>{node.id === "review" ? (node.state === "waiting" ? "Review clips" : "Open") : node.state === "empty" || node.state === "optional" ? "Add" : "Edit"}</button>;
+  if (!labels) return <button className="btn sm" onClick={() => h.open(node.id)}>{node.id === "review" ? (node.state === "waiting" ? "Review clips" : "Open") : node.id === "source" ? "+ Add video" : node.state === "empty" || node.state === "optional" ? "Add" : "Edit"}</button>;
   // Idempotent: a step that's up to date with its inputs would only give the same result again.
   if (node.state === "done" || node.state === "waiting") return <button className="btn sm up-to-date" disabled title={UP_TO_DATE}>✓ Up to date</button>;
   const primary = node.state === "ready" || node.state === "stale" || node.state === "failed" || node.state === "stopped";
   return (
-    <button className={`btn sm ${primary ? "primary" : ""}`} disabled={node.state === "locked" || node.state === "optional"} onClick={() => h.step(node.id)}>
+    <button className={`btn sm ${primary ? "primary" : ""}`} disabled={node.state === "locked" || (node.state === "optional" && !node.canRun)} onClick={() => h.step(node.id)}>
       {node.state === "stale" ? `▶ ${labels[1]}` : `▶ ${labels[0]}`}
     </button>
   );
@@ -206,8 +216,8 @@ function Canvas(props: { wf: Workflow; lib: Library; jobs: Job[]; run: Run | nul
   const { fitView } = useReactFlow();
   const build = useCallback((): Node<any>[] => {
     const heads: Node<PhaseData>[] = PHASES.map((name, i) => ({
-      id: `phase-${i + 1}`, type: "phase", position: { x: X[i], y: -86 }, draggable: false, selectable: false,
-      data: { n: i + 1, name, width: 272 },
+      id: `phase-${i + 1}`, type: "phase", position: { x: PHASE_AT[i].x, y: -86 }, draggable: false, selectable: false,
+      data: { n: i + 1, name, width: PHASE_AT[i].w },
     }));
     const steps: Node<NodeData>[] = ORDER.map((id) => ({
       id, type: "step", position: LAYOUT[id],

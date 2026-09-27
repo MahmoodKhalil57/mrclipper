@@ -5,20 +5,21 @@ import { JobCard } from "../Common";
 import { tc, tcms } from "../util";
 import { KIND_LABEL, StepTrigger, cropSafe, nodeJob, useShots, type PanelProps } from "./shared";
 
-export function TranscriptPanel(p: PanelProps) {
+export function TranscriptPanel(p: PanelProps & { focus?: "audio" | "vision" }) {
   const [segs, setSegs] = useState<Segment[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [q, setQ] = useState("");
   const [now, setNow] = useState(0);
   const [noting, setNoting] = useState<number | null>(null);
-  const [track, setTrack] = useState<"audio" | "vision">("audio");
+  const [track, setTrack] = useState<"audio" | "vision">(p.focus ?? "audio");
+  useEffect(() => setTrack(p.focus ?? "audio"), [p.focus]);
   const shots = useShots(p.video.name, p.video.vision?.shots);
   const activeShot = shots.findIndex((s) => now >= s.start && now < s.end);
   const [noteText, setNoteText] = useState("");
   const vid = useRef<HTMLVideoElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
-  const job = nodeJob(p, "transcript");
+  const job = nodeJob(p, p.focus === "vision" ? "shots" : "transcript");
 
   // timeupdate only fires ~4x a second, which makes the highlight trail the voice; poll every frame while playing.
   useEffect(() => {
@@ -81,7 +82,7 @@ export function TranscriptPanel(p: PanelProps) {
     return (
       <div className="stack">
         <div className="empty-panel">
-          <p>No transcript yet. The Transcriber writes the audio in its original language with measured word timings, then logs every shot.</p>
+          <p>No transcript yet. The Transcriber writes the audio in its original language with measured word timings. What's on screen is the Shots step.</p>
           <button className="btn primary" onClick={() => p.step("transcript")}>▶ Transcribe {tc(p.video.duration)}</button>
         </div>
         {job && <JobCard job={job} onStop={p.stop} />}
@@ -96,7 +97,7 @@ export function TranscriptPanel(p: PanelProps) {
         <video ref={vid} className="player small" src={fileUrl(p.video.path)} controls preload="metadata" onTimeUpdate={(e) => setNow(e.currentTarget.currentTime)} />
         <div className="seg-tabs">
           <button className={track === "audio" ? "on" : ""} onClick={() => setTrack("audio")}>Audio · {segs.length} lines</button>
-          <button className={track === "vision" ? "on" : ""} onClick={() => setTrack("vision")} disabled={!shots.length}>
+          <button className={track === "vision" ? "on" : ""} onClick={() => setTrack("vision")}>
             Vision · {shots.length ? `${shots.length} shots` : "not built yet"}
           </button>
         </div>
@@ -105,6 +106,12 @@ export function TranscriptPanel(p: PanelProps) {
           <span className="mono faint">{q ? `${shown.length} hits` : `${segs.length} lines · ${notes.length} notes`}</span>
         </div>
       </div>
+      {track === "vision" && !shots.length && (
+        <div className="empty-panel">
+          <p>No shots yet. Shots measures every cut in the video, has a vision model describe a frame from each shot, and measures faces for the 9:16 crop.</p>
+          {nodeJob(p, "shots")?.status !== "running" && <button className="btn primary" onClick={() => p.step("shots")}>▶ Find shots</button>}
+        </div>
+      )}
       {track === "vision" && (
         <div className="shots">
           <div className="hint" style={{ padding: "2px 4px 6px" }}>

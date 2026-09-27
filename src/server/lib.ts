@@ -83,6 +83,44 @@ export async function probeDuration(path: string): Promise<number> {
   return (await probeMedia(path)).duration;
 }
 
+/** Integrated loudness (LUFS, EBU R128) of a file's audio, or of a stretch of it. Null for silence. */
+export async function measureLoudness(path: string, opts: { ss?: number; t?: number; signal?: AbortSignal } = {}): Promise<number | null> {
+  const r = await run([
+    "ffmpeg", "-hide_banner", "-nostats", ...(opts.ss !== undefined ? ["-ss", opts.ss.toFixed(3)] : []), ...(opts.t ? ["-t", opts.t.toFixed(3)] : []),
+    "-i", path, "-vn", "-af", "ebur128", "-f", "null", "-",
+  ], { signal: opts.signal });
+  const summary = r.stderr.slice(r.stderr.lastIndexOf("Summary:"));
+  const i = Number(summary.match(/I:\s*(-?[\d.]+) LUFS/)?.[1]);
+  return Number.isFinite(i) && i > -70 ? i : null;
+}
+
+/**
+ * POST a chat completion, retrying what's worth retrying: a connection that fails before any response
+ * (a dropped network, a slow DNS answer), rate limits and server errors, up to three tries with a pause.
+ */
+async function post(body: Record<string, unknown>, key: string, signal?: AbortSignal): Promise<Response> {
+  for (let attempt = 1; ; attempt++) {
+    signal?.throwIfAborted();
+    try {
+      const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(600_000)]) : AbortSignal.timeout(600_000),
+      });
+      if ((res.status === 429 || res.status >= 500) && attempt < 3) {
+        await res.body?.cancel().catch(() => {});
+        await sleep(1500 * attempt, signal);
+        continue;
+      }
+      return res;
+    } catch (e) {
+      if (signal?.aborted || attempt >= 3 || (e instanceof DOMException && e.name === "TimeoutError")) throw e;
+      await sleep(1500 * attempt, signal);
+    }
+  }
+}
+
 export type ChatResult = { content: string; model: string; provider?: string; usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number } };
 
 /** One OpenRouter chat completion. `models` may list fallbacks. */
@@ -94,15 +132,54 @@ export async function openrouter(
   const key = openrouterKey();
   if (!key) throw new Error(MISSING_KEY);
   const list = Array.isArray(models) ? models : [models];
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ ...(list.length > 1 ? { models: list } : { model: list[0] }), usage: { include: true }, ...body }),
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(600_000)]) : AbortSignal.timeout(600_000),
-  });
+  const res = await post({ ...(list.length > 1 ? { models: list } : { model: list[0] }), usage: { include: true }, ...body }, key, signal);
   const data = (await res.json().catch(() => ({}))) as any;
   if (!res.ok || !data.choices) throw new Error(`OpenRouter HTTP ${res.status}: ${JSON.stringify(data).slice(0, 300)}`);
   return { content: data.choices[0].message.content ?? "", model: data.model ?? list[0], provider: data.provider, usage: data.usage };
+}
+
+/**
+ * One OpenRouter call to a model that makes audio (music with Lyria). Audio output is only streamed: the
+ * base64 pieces arrive in `delta.audio.data` and are joined here. Returns the file's bytes and what it cost.
+ */
+export async function openrouterAudio(
+  body: Record<string, unknown>,
+  model: string,
+  signal?: AbortSignal,
+): Promise<{ audio: Buffer; text: string; model: string; provider?: string; cost?: number }> {
+  const key = openrouterKey();
+  if (!key) throw new Error(MISSING_KEY);
+  // Retried only until a response starts: once audio streams, a retry could be billed twice.
+  const res = await post({ model, modalities: ["text", "audio"], stream: true, usage: { include: true }, ...body }, key, signal);
+  if (!res.ok || !res.body) throw new Error(`OpenRouter HTTP ${res.status}: ${(await res.text().catch(() => "")).slice(0, 300)}`);
+  const pieces: Buffer[] = [];
+  let text = "", usedModel = model, provider: string | undefined, cost: number | undefined, buf = "";
+  const decoder = new TextDecoder();
+  for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+    buf += decoder.decode(chunk, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf("\n")) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:") || line === "data: [DONE]") continue;
+      let ev: any;
+      try {
+        ev = JSON.parse(line.slice(5));
+      } catch {
+        continue;
+      }
+      if (ev.error) throw new Error(`OpenRouter: ${JSON.stringify(ev.error).slice(0, 300)}`);
+      usedModel = ev.model ?? usedModel;
+      provider = ev.provider ?? provider;
+      if (ev.usage?.cost !== undefined) cost = ev.usage.cost;
+      const d = ev.choices?.[0]?.delta ?? {};
+      if (d.audio?.data) pieces.push(Buffer.from(d.audio.data, "base64"));
+      if (typeof d.content === "string") text += d.content;
+    }
+  }
+  // An empty answer comes back now and then (only section markers, no audio). It's returned rather than
+  // thrown, with whatever it cost, so the caller can count it and try again.
+  return { audio: Buffer.concat(pieces), text, model: usedModel, provider, cost };
 }
 
 /** Pull a JSON object out of model output that may be fenced or wrapped in prose. */

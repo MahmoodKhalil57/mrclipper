@@ -6,18 +6,19 @@
 // render.json remembers what each file was rendered from (a hash of the clip's edit, plus the effects and
 // asset files it uses), so only clips whose edit changed (you nudged an edge, Design ran again, you edited an
 // effect or replaced a file in assets/) are rendered again.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, parse } from "node:path";
 import { ROOT } from "../config";
 import type { JobContext } from "../jobs";
 import { OUTLINE_FILE, readClipData, readText, readTranscript, rel, runDir, type ClipData } from "../library";
-import { fmt, run, type Segment } from "../lib";
+import { fmt, measureLoudness, run, type Segment } from "../lib";
 import { droppedClips } from "../review";
 import { assetsFingerprint, listAssets, measureAssets, type Asset } from "../effects/assets";
 import { effectsFingerprint, loadCatalog } from "../effects/catalog";
 import { BITRATE_CAP, compileEdit, editDeps } from "../effects/compile";
+import { scoreFor } from "../effects/music";
 import { rtl } from "../effects/template";
-import { framingParts, readEditStyle, type EditStyle } from "./edit";
+import { framingParts, takeStyle, type EditStyle } from "./edit";
 import { probeAspect } from "./framing";
 import { hashText } from "./text";
 import { trackEdit } from "./track";
@@ -39,10 +40,62 @@ export function readManifest(runId: string): RenderManifest {
 
 /** What a clip's file depends on: its edges, its edit and the take's style, and the definitions of the
  *  effects and the asset files it uses (edits made before the effects library hash as they always did). */
-export function editHash(c: Clip, style: EditStyle | undefined, assets: Asset[] = listAssets()) {
+export function editHash(c: Clip, style: EditStyle | undefined, assets: Asset[] = listAssets(), score?: string) {
   const base = { s: c.start, e: c.end, edit: c.edit ?? null, style: style ?? null };
   const deps = c.edit?.segments?.length && c.edit.enabled !== false ? editDeps(c.edit, loadCatalog(), assets) : null;
-  return hashText(JSON.stringify(deps?.library ? { ...base, fx: effectsFingerprint(deps.defs), files: assetsFingerprint(deps.assets) } : base));
+  const extra = { ...(deps?.library ? { fx: effectsFingerprint(deps.defs), files: assetsFingerprint(deps.assets) } : {}), ...(score ? { score, mix: MIX_VERSION } : {}) };
+  return hashText(JSON.stringify(Object.keys(extra).length ? { ...base, ...extra } : base));
+}
+
+/** Bump when the mix changes (levels, cleanup, mastering), so clips with scores are mixed again. */
+const MIX_VERSION = 2;
+
+/** Dialogue level: the voice is brought here before mixing, so music and sounds sit against a known level. */
+const VOICE_LUFS = -18;
+
+/** The loudness of a clip's voice over the parts it plays, from the source (energy-weighted across parts). */
+async function voiceLoudness(video: string, parts: { start: number; end: number }[], signal: AbortSignal): Promise<number | null> {
+  let energy = 0, seconds = 0;
+  for (const p of parts) {
+    const l = await measureLoudness(video, { ss: p.start, t: p.end - p.start, signal }).catch(() => null);
+    if (l === null) continue;
+    energy += (p.end - p.start) * Math.pow(10, l / 10);
+    seconds += p.end - p.start;
+  }
+  return seconds ? 10 * Math.log10(energy / seconds) : null;
+}
+
+/**
+ * Mastering: the finished clip brought to the outline's loudness with ONE gain, measured over the whole
+ * clip, and a limiter to hold peaks near -2 dB. (A loudness filter that adapts as it goes lifted every
+ * pause, and the recording's hiss with it.) The video is copied; only the audio is encoded again.
+ */
+async function master(ctx: JobContext, file: string, target: number | null | undefined) {
+  if (target === null) return null;
+  const want = target ?? -14;
+  const now = await measureLoudness(file, { signal: ctx.signal });
+  if (now === null) return null;
+  const gain = Math.max(-12, Math.min(20, want - now));
+  if (Math.abs(gain) < 0.3) return { now, gain: 0 };
+  const tmp = file.replace(/\.mp4$/, ".mastered.mp4");
+  const r = await run([
+    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", file, "-map", "0:v", "-map", "0:a", "-c:v", "copy",
+    "-af", `volume=${gain.toFixed(2)}dB,alimiter=limit=0.794:attack=4:release=80:level=0,aresample=48000`,
+    "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", tmp,
+  ], { signal: ctx.signal });
+  if (r.code !== 0) {
+    ctx.log(`Mastering skipped: ${r.stderr.slice(-200)}`, "warn");
+    rmSync(tmp, { force: true });
+    return null;
+  }
+  try {
+    rmSync(file, { force: true });
+    renameSync(tmp, file);
+  } catch (e) {
+    ctx.log(`Couldn't replace the clip with its mastered version (is it open somewhere?): ${e instanceof Error ? e.message : e}`, "warn");
+    return null;
+  }
+  return { now, gain };
 }
 
 /** Per clip: rendered from its current edit, rendered from an older one, or not rendered. Dropped clips don't need a file. */
@@ -58,7 +111,7 @@ export function renderStatus(runId: string) {
     const has = existsSync(file);
     const entry = m.clips[c.id];
     // Takes rendered before render.json existed: a file newer than the clip data counts as current.
-    const fresh = has && (entry ? entry.hash === editHash(c, data.edit_style, assets) && Math.round(statSync(file).mtimeMs) === entry.mtime : statSync(file).mtimeMs >= scriptTime - 2000);
+    const fresh = has && (entry ? entry.hash === editHash(c, data.edit_style, assets, scoreFor(runId, c.id)?.key) && Math.round(statSync(file).mtimeMs) === entry.mtime : statSync(file).mtimeMs >= scriptTime - 2000);
     return { id: c.id, file: has ? rel(file) : null, fresh, dropped: dropped.has(c.id) };
   });
   const needed = clips.filter((c) => !c.dropped);
@@ -151,7 +204,7 @@ export async function renderTake(ctx: JobContext, input: RenderInput) {
   }
   ctx.log(`Rendering ${clips.length} clip(s)${vertical ? " as 9:16" : ""}`);
   // The take's frozen settings, plus any added since it was made (loudness…), from the outline it was made with.
-  const style: EditStyle = { ...readEditStyle(readText(join(dir, "outline.md")) || readText(OUTLINE_FILE)), ...(data.edit_style ?? {}) };
+  const style: EditStyle = takeStyle(readText(join(dir, "outline.md")) || readText(OUTLINE_FILE), data.edit_style);
   const allSegs = readTranscript(data.video) ?? [];
   const vt = readVision(data.video);
   const aspect = await probeAspect(data.video);
@@ -178,14 +231,19 @@ export async function renderTake(ctx: JobContext, input: RenderInput) {
             return null;
           })
         : null;
+      // The voice to dialogue level first, so music and sounds are mixed against a known level.
+      const voice = await voiceLoudness(data.video, c.edit.segments, ctx.signal);
+      const voiceGain = voice === null ? 0 : Math.max(-8, Math.min(24, VOICE_LUFS - voice));
+      const score = scoreFor(input.run, c.id);
       const r0 = compileEdit({
         edit: c.edit, style, video: data.video, vertical, aspect, vt, tracked: tracked?.parts, segs: allSegs,
-        catalog, assets, dir, name: `clip_${id2}`, out: `clip_${id2}.mp4`,
+        catalog, assets, dir, name: `clip_${id2}`, out: `clip_${id2}.mp4`, voiceGain,
+        ...(score ? { score: { file: score.file, lufs: score.lufs, seconds: score.seconds } } : {}),
       });
       for (const [name, text] of Object.entries(r0.files)) writeFileSync(join(dir, name), text, "utf8");
       const n = r0.counts;
       const extras = [n.video && `${n.video} video effect${n.video > 1 ? "s" : ""}`, n.overlays && `${n.overlays} overlay${n.overlays > 1 ? "s" : ""}`, n.text && `${n.text} text`, n.sounds && `${n.sounds} sound${n.sounds > 1 ? "s" : ""}`, n.voice && `${n.voice} voice effect${n.voice > 1 ? "s" : ""}`, n.music && "music"].filter(Boolean);
-      ctx.log(`Clip ${c.id} "${c.title}": ${n.parts} parts, ${n.joins} transitions${extras.length ? `, ${extras.join(", ")}` : ""}, ${r0.duration.toFixed(1)}s${tracked ? `; crop follows faces in ${tracked.moving} of ${tracked.total} shot parts` : ""}`);
+      ctx.log(`Clip ${c.id} "${c.title}": ${n.parts} parts, ${n.joins} transitions${extras.length ? `, ${extras.join(", ")}` : ""}${score ? ` (its own score: ${r0.fit})` : ""}, ${r0.duration.toFixed(1)}s${tracked ? `; crop follows faces in ${tracked.moving} of ${tracked.total} shot parts` : ""}; voice ${voice === null ? "not measured" : `${voice.toFixed(1)} LUFS, ${voiceGain >= 0 ? "+" : ""}${voiceGain.toFixed(1)} dB`}`);
       for (const note of r0.notes) ctx.log(`Clip ${c.id}: ${note}`, "warn");
       const r = await run(r0.args, {
         cwd: dir,
@@ -239,7 +297,9 @@ export async function renderTake(ctx: JobContext, input: RenderInput) {
       continue;
     }
     if (!manifest.clips[c.id]) firstTime.push({ clip: c, out });
-    manifest.clips[c.id] = { hash: editHash(c, data.edit_style, assets), mtime: Math.round(statSync(out).mtimeMs), at: Date.now() };
+    const m = await master(ctx, out, style.loudness);
+    if (m && m.gain) ctx.log(`Clip ${c.id}: mastered from ${m.now.toFixed(1)} to ${(style.loudness ?? -14)} LUFS (${m.gain >= 0 ? "+" : ""}${m.gain.toFixed(1)} dB)`);
+    manifest.clips[c.id] = { hash: editHash(c, data.edit_style, assets, scoreFor(input.run, c.id)?.key), mtime: Math.round(statSync(out).mtimeMs), at: Date.now() };
     writeFileSync(manifestPath(input.run), JSON.stringify(manifest, null, 1), "utf8");
     done.push(c.id);
   }

@@ -8,7 +8,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { z } from "zod";
-import { startBrief, startCheck, startCoach, startDesign, startPick, startRefImport, startRefStyle, startRender, startTranscript } from "./actions";
+import { startBrief, startCheck, startCoach, startDesign, startMusic, startPick, startRefImport, startRefStyle, startRender, startShots, startTitles, startTranscript } from "./actions";
 import { readBrief } from "./agents/brief";
 import { readCheck } from "./agents/check";
 import { outlineState } from "./agents/outlines";
@@ -57,7 +57,7 @@ function jobStatusTool(server: McpServer) {
   );
 }
 
-const STEPS = ["transcript", "refstyle", "brief", "pick", "design", "render", "check", "coach"] as const;
+const STEPS = ["transcript", "shots", "refstyle", "brief", "pick", "titles", "music", "design", "render", "check", "coach"] as const;
 
 export const AGENTS = {
   transcribe: {
@@ -126,7 +126,7 @@ export const AGENTS = {
         "run_workflow",
         {
           description:
-            "▶ Run: do every step that isn't up to date, in order (transcribe, reference style, brief, then a take: pick → design → render → check), " +
+            "▶ Run: do every step that isn't up to date, in order (transcribe, shots, reference style, brief, then a take: pick → hook cards → music, when the outline asks for scores → design → render → check), " +
             "stopping at Review for the user. After a finished review it runs the Coach. Steps are idempotent: one whose inputs haven't changed " +
             "doesn't run again, so when everything is up to date there's nothing to run. For a new take, change one of Pick's inputs: a direction " +
             "or clip count given here is saved as Pick's setting, and a different one makes the current take out of date. " +
@@ -149,7 +149,7 @@ export const AGENTS = {
           description:
             `Run one step on its own: ${STEPS.map((s) => `${s} (${LABEL[s]})`).join(", ")}. ` +
             "A step that's up to date with its inputs doesn't run (it would give the same result): the answer says so. " +
-            "pick uses Pick's settings (a direction or count given here is saved first); design, render and check need a take id; " +
+            "pick uses Pick's settings (a direction or count given here is saved first); titles (hook cards), music (a Lyria score per clip, about $0.08 each), design, render and check need a take id; " +
             "coach can take a new direction. Returns a job_id; poll job_status.",
           inputSchema: {
             step: z.enum(STEPS),
@@ -172,6 +172,9 @@ export const AGENTS = {
           if (why) return { up_to_date: why };
           switch (a.step) {
             case "transcript": return started(startTranscript(need(a.video, "video")));
+            case "shots": return started(startShots(need(a.video, "video")));
+            case "titles": return started(startTitles(need(a.take, "take")));
+            case "music": return started(startMusic({ run: need(a.take, "take"), only: a.only }));
             case "refstyle": return started(startRefStyle());
             case "brief": return started(startBrief(need(a.video, "video")));
             case "pick": return started(startPick({ video: need(a.video, "video") }));

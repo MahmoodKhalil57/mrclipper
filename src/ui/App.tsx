@@ -228,6 +228,7 @@ export function App() {
           stop={stop}
           toast={toast}
           step={step}
+          addVideo={onAdded}
           selectTake={(id) => setTakeByVideo((m) => {
             const { [video.name]: _, ...rest } = m;
             return id ? { ...rest, [video.name]: id } : rest;

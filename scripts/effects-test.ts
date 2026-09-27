@@ -74,7 +74,7 @@ const style = { ...readEditStyle("- **Caption style:** karaoke\n- **Transitions:
 
 const PARAMS: Record<string, Record<string, unknown>> = {
   lut: { file: "warm" }, overlay: { file: "sparkle", position: "top_right", scale: 0.3 }, sfx: { file: "boom" }, music: { file: "piano" },
-  asset_wipe: { file: "fire" },
+  asset_wipe: { file: "fire" }, ambience: { file: "boom" },
 };
 const needs = (d: EffectDef) => {
   const p: Record<string, unknown> = { ...(PARAMS[d.name] ?? {}) };

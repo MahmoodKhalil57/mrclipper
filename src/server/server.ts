@@ -6,6 +6,7 @@ import { INTERNAL_TOKEN, keyStatus, openrouterKey } from "./key";
 import { workerdBinary, writeWorkerdConfig } from "./workerd";
 import { listJobs, onEvent, sysLog } from "./jobs";
 import { OUTLINE_FILE, historyPaths, listRuns, listVideos, readText, rel, safePath } from "./library";
+import { BUILTIN_SOUNDS } from "./effects/assets";
 import { AGENTS, handleMcp, type McpAgentKey } from "./mcp";
 import { handleApi } from "./api";
 import { readReview } from "./review";
@@ -297,6 +298,9 @@ export function startMrClipper() {
         } catch {}
         return new Response("Not found", { status: 404 });
       }
+      // The built-in sound library, which lives with the app rather than in the workspace.
+      const sound = path.match(/^\/sounds\/([a-z0-9_]+\.mp3)$/);
+      if (sound && existsSync(join(BUILTIN_SOUNDS, sound[1]))) return serveFile(join(BUILTIN_SOUNDS, sound[1]), req);
 
       // Static UI (single-page app fallback).
       const asset = join(UI_DIR, path === "/" ? "index.html" : path);

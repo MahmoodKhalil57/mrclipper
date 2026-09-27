@@ -1,0 +1,564 @@
+{
+ "about": "Built-in recorded sound effects. All CC0 (public domain) from Freesound; see CREDITS.md. Built by scripts/sounds.ts.",
+ "sounds": [
+  {
+   "name": "whoosh_fast",
+   "description": "A fast air whoosh: under a quick transition, a whip, text flying in.",
+   "tags": [
+    "transition",
+    "movement"
+   ],
+   "seconds": 0.44,
+   "source": "https://freesound.org/people/qubodup/sounds/60030/",
+   "author": "qubodup",
+   "title": "Swosh / Whoosh / Air Cut",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "whoosh_long",
+   "description": "A long, deep cinematic whoosh: a big transition or a slow reveal.",
+   "tags": [
+    "transition",
+    "cinematic"
+   ],
+   "seconds": 1.69,
+   "source": "https://freesound.org/people/AudioPapkin/sounds/812675/",
+   "author": "AudioPapkin",
+   "title": "Sound Design Elements Whoosh SFX 040",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "swoosh",
+   "description": "A light swoosh: slides, pop-ins, quick moves.",
+   "tags": [
+    "transition",
+    "text"
+   ],
+   "seconds": 0.32,
+   "source": "https://freesound.org/people/lesaucisson/sounds/585257/",
+   "author": "lesaucisson",
+   "title": "swoosh-1.mp3",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "swish",
+   "description": "A sharp, thin swish: fast cuts, a blade-quick move.",
+   "tags": [
+    "transition",
+    "fast"
+   ],
+   "seconds": 0.57,
+   "source": "https://freesound.org/people/jawbutch/sounds/344408/",
+   "author": "jawbutch",
+   "title": "Knife Swish 2.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "riser",
+   "description": "A rising swell that builds into a drop or a reveal; end it on the moment.",
+   "tags": [
+    "build",
+    "tension"
+   ],
+   "seconds": 2.34,
+   "source": "https://freesound.org/people/syntheffects/sounds/685256/",
+   "author": "syntheffects",
+   "title": "Riser sound effect short.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "reverse_cymbal",
+   "description": "A reversed cymbal that swells into a hit or a cut; end it on the moment.",
+   "tags": [
+    "build",
+    "transition"
+   ],
+   "seconds": 2.22,
+   "source": "https://freesound.org/people/genocidalguitar/sounds/110218/",
+   "author": "genocidalguitar",
+   "title": "reverse crash.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "hit_cinematic",
+   "description": "A big cinematic hit with brass: a title slam, a dramatic reveal.",
+   "tags": [
+    "impact",
+    "drama"
+   ],
+   "seconds": 4.35,
+   "source": "https://freesound.org/people/DeVern/sounds/427803/",
+   "author": "DeVern",
+   "title": "Cinematic Hit With Horns.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "impact",
+   "description": "A short, punchy impact: a zoom punch, a word landing.",
+   "tags": [
+    "impact",
+    "beat"
+   ],
+   "seconds": 0.45,
+   "source": "https://freesound.org/people/MadPanCake/sounds/660770/",
+   "author": "MadPanCake",
+   "title": "Hit Impact",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "punch",
+   "description": "A heavy punch: comedy slaps, anime hits.",
+   "tags": [
+    "impact",
+    "comedy",
+    "anime"
+   ],
+   "seconds": 0.27,
+   "source": "https://freesound.org/people/steveuk87/sounds/490769/",
+   "author": "steveuk87",
+   "title": "Punch 2 - Heavy.ogg",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "boom",
+   "description": "A deep boom: an entrance, a reveal, a beat drop.",
+   "tags": [
+    "impact",
+    "drop"
+   ],
+   "seconds": 1.71,
+   "source": "https://freesound.org/people/Woodingp/sounds/116643/",
+   "author": "Woodingp",
+   "title": "Intro Boom.aif",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "bass_drop",
+   "description": "A sub-bass drop: hype moments and drops.",
+   "tags": [
+    "drop",
+    "hype"
+   ],
+   "seconds": 2.44,
+   "source": "https://freesound.org/people/uzerx/sounds/59540/",
+   "author": "uzerx",
+   "title": "sub bass 4 secondsssss.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "heartbeat",
+   "description": "Four heartbeats: tension, fear, an emotional pause.",
+   "tags": [
+    "tension",
+    "emotional"
+   ],
+   "seconds": 3.61,
+   "source": "https://freesound.org/people/Lunardrive/sounds/22416/",
+   "author": "Lunardrive",
+   "title": "Four Heartbeats HQ_BeatSmith.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "camera_shutter",
+   "description": "A camera shutter: freeze frames, photo moments.",
+   "tags": [
+    "photo",
+    "freeze"
+   ],
+   "seconds": 0.29,
+   "source": "https://freesound.org/people/mywhats/sounds/175517/",
+   "author": "mywhats",
+   "title": "camera shutter.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "ding",
+   "description": "A clear ding: a fact, a correct answer, an idea.",
+   "tags": [
+    "info",
+    "correct"
+   ],
+   "seconds": 1.34,
+   "source": "https://freesound.org/people/Daphne_in_Wonderland/sounds/127149/",
+   "author": "Daphne_in_Wonderland",
+   "title": "ding.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "chime",
+   "description": "A soft wind-chime tone: a gentle memory, a tender beat.",
+   "tags": [
+    "soft",
+    "memory"
+   ],
+   "seconds": 4,
+   "source": "https://freesound.org/people/Anthousai/sounds/398496/",
+   "author": "Anthousai",
+   "title": "wind chimes - single 04.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "pop",
+   "description": "A bubbly pop: text or stickers popping in.",
+   "tags": [
+    "text",
+    "cute"
+   ],
+   "seconds": 0.22,
+   "source": "https://freesound.org/people/quatricise/sounds/789793/",
+   "author": "quatricise",
+   "title": "Pop 4",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "click",
+   "description": "A mouse click: UI moments, selections.",
+   "tags": [
+    "ui",
+    "tech"
+   ],
+   "seconds": 0.28,
+   "source": "https://freesound.org/people/pbimal/sounds/534103/",
+   "author": "pbimal",
+   "title": "mouse-click-single-00.flac",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "typing",
+   "description": "Keyboard typing: under typed-on text, tech moments.",
+   "tags": [
+    "ui",
+    "tech"
+   ],
+   "seconds": 4.12,
+   "loop": true,
+   "source": "https://freesound.org/people/Psykophobia/sounds/250390/",
+   "author": "Psykophobia",
+   "title": "Keyboard Typing Tapping.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "record_scratch",
+   "description": "A record scratch: 'wait, what?', a sudden stop before a freeze.",
+   "tags": [
+    "comedy",
+    "stop"
+   ],
+   "seconds": 1.47,
+   "source": "https://freesound.org/people/simkiott/sounds/43404/",
+   "author": "simkiott",
+   "title": "record_scratch.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "glitch",
+   "description": "A digital glitch: under glitch effects and cuts.",
+   "tags": [
+    "glitch",
+    "tech"
+   ],
+   "seconds": 2,
+   "source": "https://freesound.org/people/AmicaSys/sounds/332711/",
+   "author": "AmicaSys",
+   "title": "Glitch",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "crowd_laugh",
+   "description": "A small audience laughing: sitcom-style comedy beats.",
+   "tags": [
+    "comedy",
+    "crowd"
+   ],
+   "seconds": 4.36,
+   "source": "https://freesound.org/people/snakebarney/sounds/138112/",
+   "author": "snakebarney",
+   "title": "Small Crowd Laughing",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "applause",
+   "description": "Small applause: a great line, a win, an ending.",
+   "tags": [
+    "crowd",
+    "ending"
+   ],
+   "seconds": 4.48,
+   "source": "https://freesound.org/people/Breviceps/sounds/462362/",
+   "author": "Breviceps",
+   "title": "Small applause",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "crowd_gasp",
+   "description": "A crowd gasping in shock: a shocking moment.",
+   "tags": [
+    "shock",
+    "crowd"
+   ],
+   "seconds": 3.02,
+   "source": "https://freesound.org/people/deleted_user_2104797/sounds/324898/",
+   "author": "deleted_user_2104797",
+   "title": "Crowd shock.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "crowd_aww",
+   "description": "A crowd going 'aww': cute or touching moments.",
+   "tags": [
+    "cute",
+    "crowd"
+   ],
+   "seconds": 2,
+   "source": "https://freesound.org/people/phmiller42/sounds/124996/",
+   "author": "phmiller42",
+   "title": "aww.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "cash_register",
+   "description": "A cash register: money, prices, a deal.",
+   "tags": [
+    "money",
+    "comedy"
+   ],
+   "seconds": 2.1,
+   "source": "https://freesound.org/people/CapsLok/sounds/184438/",
+   "author": "CapsLok",
+   "title": "Cash Register Fake.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "sparkle",
+   "description": "A magic sparkle: glow-ups, reveals, cute moments.",
+   "tags": [
+    "magic",
+    "reveal"
+   ],
+   "seconds": 1.27,
+   "source": "https://freesound.org/people/MLaudio/sounds/511485/",
+   "author": "MLaudio",
+   "title": "cartoon_wink_magic_sparkle.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "rewind",
+   "description": "A vinyl rewind: going back in time, a flashback, 'let's rewind'.",
+   "tags": [
+    "flashback",
+    "time"
+   ],
+   "seconds": 2.68,
+   "source": "https://freesound.org/people/TasmanianPower/sounds/162493/",
+   "author": "TasmanianPower",
+   "title": "Vinyl rewind",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "clock_ticking",
+   "description": "A clock ticking: waiting, suspense, time running out.",
+   "tags": [
+    "suspense",
+    "time"
+   ],
+   "seconds": 5.89,
+   "loop": true,
+   "source": "https://freesound.org/people/olver/sounds/130388/",
+   "author": "olver",
+   "title": "Clock ticking",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "sword_slash",
+   "description": "A sword swing: anime cuts, fast strikes.",
+   "tags": [
+    "anime",
+    "action"
+   ],
+   "seconds": 1.1,
+   "source": "https://freesound.org/people/XxChr0nosxX/sounds/268227/",
+   "author": "XxChr0nosxX",
+   "title": "Swing.mp3",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "thunder",
+   "description": "Thunder: a dramatic turn, a storm of emotion.",
+   "tags": [
+    "drama",
+    "weather"
+   ],
+   "seconds": 6.62,
+   "source": "https://freesound.org/people/SholeColtis/sounds/683421/",
+   "author": "SholeColtis",
+   "title": "Short_Thunder_Mid.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "drum_roll",
+   "description": "A snare drum roll: before a reveal or an answer.",
+   "tags": [
+    "build",
+    "reveal"
+   ],
+   "seconds": 4.75,
+   "source": "https://freesound.org/people/bigjoedrummer/sounds/77305/",
+   "author": "bigjoedrummer",
+   "title": "buzz roll.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "sad_trombone",
+   "description": "A 'wah wah' sad trombone: a comic fail.",
+   "tags": [
+    "comedy",
+    "fail"
+   ],
+   "seconds": 4.24,
+   "source": "https://freesound.org/people/TaranP/sounds/362206/",
+   "author": "TaranP",
+   "title": "horn_fail_wahwah_1.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "boing",
+   "description": "A cartoon boing: silly bounces, comic moments.",
+   "tags": [
+    "comedy",
+    "cartoon"
+   ],
+   "seconds": 1.1,
+   "source": "https://freesound.org/people/magnuswaker/sounds/540790/",
+   "author": "magnuswaker",
+   "title": "Boing 2",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "notification",
+   "description": "A phone notification: a message, a reminder.",
+   "tags": [
+    "ui",
+    "phone"
+   ],
+   "seconds": 0.32,
+   "source": "https://freesound.org/people/AnthonyRox/sounds/740423/",
+   "author": "AnthonyRox",
+   "title": "Message Notification 4",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "vinyl_crackle",
+   "description": "Record crackle and dust: nostalgia under a scene.",
+   "tags": [
+    "nostalgia",
+    "ambience"
+   ],
+   "seconds": 10,
+   "loop": true,
+   "texture": [
+    "vinyl crackle",
+    "crackle"
+   ],
+   "source": "https://freesound.org/people/mitchanary/sounds/614342/",
+   "author": "mitchanary",
+   "title": "Vinyl Dust 50.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "room_tone",
+   "description": "Quiet room ambience: fills a silence or a freeze.",
+   "tags": [
+    "ambience",
+    "silence"
+   ],
+   "seconds": 12,
+   "loop": true,
+   "texture": [
+    "room tone"
+   ],
+   "source": "https://freesound.org/people/kyles/sounds/454166/",
+   "author": "kyles",
+   "title": "room tone medium quiet Pablo's condo.flac",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "suspense_sting",
+   "description": "A tension sting: something is wrong, a twist.",
+   "tags": [
+    "tension",
+    "twist"
+   ],
+   "seconds": 4.49,
+   "source": "https://freesound.org/people/FartMuffin/sounds/506295/",
+   "author": "FartMuffin",
+   "title": "tension sting.mp3",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "crickets",
+   "description": "Crickets: an awkward silence after a joke falls flat.",
+   "tags": [
+    "comedy",
+    "silence"
+   ],
+   "seconds": 7.36,
+   "loop": true,
+   "source": "https://freesound.org/people/lezaarth/sounds/242046/",
+   "author": "lezaarth",
+   "title": "cricket2.wav",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "slide_whistle",
+   "description": "A falling slide whistle: a cartoon fall, a fail.",
+   "tags": [
+    "comedy",
+    "cartoon"
+   ],
+   "seconds": 2,
+   "source": "https://freesound.org/people/plasterbrain/sounds/395443/",
+   "author": "plasterbrain",
+   "title": "Cartoon Fall",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "tada",
+   "description": "A 'ta-da' fanfare: a reveal, a proud moment.",
+   "tags": [
+    "reveal",
+    "comedy"
+   ],
+   "seconds": 1.71,
+   "source": "https://freesound.org/people/plasterbrain/sounds/397355/",
+   "author": "plasterbrain",
+   "title": "Tada Fanfare A",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "buzzer_wrong",
+   "description": "A wrong-answer buzzer: a mistake, 'nope'.",
+   "tags": [
+    "comedy",
+    "fail"
+   ],
+   "seconds": 1.06,
+   "source": "https://freesound.org/people/-Andreas/sounds/648462/",
+   "author": "-Andreas",
+   "title": "Wrong Answer",
+   "license": "CC0 1.0"
+  },
+  {
+   "name": "sad_piano",
+   "description": "A short minor piano progression: a sad cut, an emotional ending.",
+   "tags": [
+    "sad",
+    "emotional"
+   ],
+   "seconds": 9.68,
+   "source": "https://freesound.org/people/johnthewizar/sounds/238328/",
+   "author": "johnthewizar",
+   "title": "A Minor Progression Piano.wav",
+   "license": "CC0 1.0"
+  }
+ ]
+}

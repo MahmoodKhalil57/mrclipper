@@ -1,15 +1,13 @@
-// Step 4b · Design edits: the LLM writes, code checks, Jev judges. For every clip of a take:
+// Step 4d · Design edits: the LLM writes, code checks, Jev judges. For every clip of a take:
 //   concepts     the LLM plans two different edits from the effects library (camera moves, looks, speed and
-//                freeze frames per part, transitions, and effects on the timeline: text, graphics, your GIFs
-//                and sounds, generated sounds, voice treatments, music), reading the outline, the brief, the
-//                style reference, the clip's words and shots, and what's in assets/
+//                freeze frames per part, transitions, and effects on the timeline: text, graphics, your GIFs,
+//                recorded sounds, voice treatments, music), reading the outline, the brief, the style reference,
+//                the clip's words and shots, its hook card (Hook cards ran before), and the files it can use
 //   checks       code keeps only what the outline allows and what exists, puts every effect on a real moment
 //                (a word, a part, a join), and test-runs each plan in ffmpeg; anything broken is dropped with a note
 //   pick         Jev picks the plan a professional editor would choose for this clip, with odds
-//   hook card    the LLM writes three options in the clip's language; Jev picks the one that stops a scroller
-//   emphasis     the LLM proposes words from the clip; Jev keeps the ones that carry its feeling
-// If the LLM can't plan a clip, Jev picks a camera move per part and a transition per join instead.
-// Every choice is saved with its odds and notes in design.json.
+// A clip the Music step scored plays its own score, so its plan adds no music. If the LLM can't plan a clip,
+// Jev picks a camera move per part and a transition per join instead. Saved with odds and notes in design.json.
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MODELS, WRITER } from "../config";
@@ -18,21 +16,23 @@ import { decide, noul, type Question } from "../jev";
 import { extractJson, openrouter, pool, run, type Segment } from "../lib";
 import { OUTLINE_FILE, readClipData, readSetting, readText, readTranscript, runDir, writeClipData } from "../library";
 import { readReview, setApproved } from "../review";
-import { assetsFingerprint, assetsText, listAssets, measureAssets, type Asset } from "../effects/assets";
+import { assetsFingerprint, assetsText, listAssets, measureAssets, offeredAssets, type Asset } from "../effects/assets";
+import { readMusic, scoreFor } from "../effects/music";
 import { catalogText, findEffect, loadCatalog, TIMELINE_KINDS, type Catalog } from "../effects/catalog";
 import { compileEdit } from "../effects/compile";
 import { checkUse, describeTimeline, gapOf, layout, MAX_FREEZE, MAX_REVERSE, MAX_SPEED, MIN_SPEED, type TimelineMap } from "../effects/timeline";
 import type { EffectDef, FxUse } from "../effects/types";
-import { norm } from "./align";
-import { defaultBrief, readBrief, type Brief } from "./brief";
-import { readEditStyle, type Edit, type EditStyle, type Gap, type Transition, type Zoom } from "./edit";
+import { takeBrief } from "./brief";
+import { takeStyle, type Edit, type EditStyle, type Gap, type Transition, type Zoom } from "./edit";
 import { probeAspect } from "./framing";
 import { readReference, referenceText } from "./reference";
-import { clipStr } from "./text";
+import { clipStr, hashText } from "./text";
+import { readTitles } from "./titles";
 import { readVision, visualsIn, type VisionTranscript } from "./vision";
 
 /** Bump when the planner changes, so takes designed before it are designed again. */
-export const DESIGN_VERSION = 2;
+export const DESIGN_VERSION = 3;
+export { takeBrief };
 
 const ZOOM_GUIDE: Record<string, string> = {
   none: "Keep the frame still: dialogue that needs no emphasis.",
@@ -62,13 +62,12 @@ export type ConceptRecord = {
 };
 export type DesignFile = {
   at: number; cost: number; guide: "llm" | "standard";
-  /** What the design was made from, besides the take: the planner's version, your effects/ and assets/. */
-  inputs?: { version: number; effects: string; assets: string };
+  /** What the design was made from, besides the take: the planner's version, your effects/ and assets/, and
+   *  the clips' scores (a clip that gets its own score is planned without music). */
+  inputs?: { version: number; effects: string; assets: string; scores?: string };
   clips: Record<string, {
     zooms: DesignDecision[];
     transitions: { gap: number; transition: Transition; p: number; options: Record<string, number> }[];
-    hook?: { chosen: string; p: number; options: Record<string, number>; texts: Record<string, string> };
-    emphasis?: { w: string; p: number; kept: boolean }[];
     /** "concepts": the LLM's plans, Jev picked; "moves": Jev picked a move per part (the fallback). */
     mode?: "concepts" | "moves";
     concepts?: ConceptRecord[];
@@ -77,44 +76,10 @@ export type DesignFile = {
 };
 
 /** What Design depends on besides its take: when one changes, the take's design is out of date. */
-export const designInputs = () => ({ version: DESIGN_VERSION, effects: loadCatalog().hash, assets: assetsFingerprint(listAssets()) });
-
-/** The brief a take was made with (snapshotted in jev.json), else the video's current one. */
-export function takeBrief(runId: string, video: string): Brief {
-  const f = join(runDir(runId), "jev.json");
-  const snap = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")).brief : null;
-  if (snap?.pick) return snap as Brief;
-  return readBrief(video)?.brief ?? defaultBrief(readText(OUTLINE_FILE));
-}
-
-/** One LLM call for every clip: a working title, three hook-card options and emphasis candidates. */
-async function writeOptions(ctx: JobContext, brief: Brief, clips: { id: number; lines: string[] }[]) {
-  const prompt = `You write options for short-form clips; a scoring model picks between them, so make the options genuinely different.
-Brief: ${brief.summary}
-Hook cards: ${brief.design.titleGuide}
-
-For each clip write:
-- "title": a 2-5 word English working title (a label for the editor, not shown to viewers)
-- "hooks": 3 different on-screen hook cards, following the hook-card guidance
-- "emphasis": up to 5 exact words copied from the clip's transcript that could carry its feeling or point
-- "why": one English sentence on why the clip fits the brief
-
-${clips.map((c) => `## Clip ${c.id}\n${clipStr(c.lines.join("\n"), 2500)}`).join("\n\n")}
-
-Reply with ONLY JSON: {"clips": [{"id": 1, "title": "...", "hooks": ["...", "...", "..."], "emphasis": ["..."], "why": "..."}]}`;
-  try {
-    const res = await openrouter({ temperature: 0.7, ...WRITER, messages: [{ role: "user", content: prompt }] }, MODELS.plan, ctx.signal);
-    ctx.addCost(res.usage?.cost);
-    const out: Record<number, { title?: string; hooks?: string[]; emphasis?: string[]; why?: string }> = {};
-    for (const c of extractJson(res.content).clips ?? []) out[Number(c.id)] = c;
-    ctx.log(`${res.model} via ${res.provider ?? "OpenRouter"} wrote title options for ${Object.keys(out).length} clips; Jev picks next`);
-    return { out, cost: res.usage?.cost ?? 0 };
-  } catch (e) {
-    if (ctx.signal.aborted) throw e;
-    ctx.log(`Title options failed (${e instanceof Error ? e.message : e}); keeping placeholder titles`, "warn");
-    return { out: {}, cost: 0 };
-  }
-}
+export const designInputs = (runId: string) => ({
+  version: DESIGN_VERSION, effects: loadCatalog().hash, assets: assetsFingerprint(listAssets()),
+  scores: hashText(JSON.stringify(Object.entries(readMusic(runId)?.clips ?? {}).map(([id, c]) => [id, c.key]).sort())),
+});
 
 // ── the planner's prompt ─────────────────────────────────────────────
 
@@ -140,7 +105,7 @@ const INTENSITY: Record<NonNullable<EditStyle["intensity"]>, string> = {
 };
 const CAP: Record<NonNullable<EditStyle["intensity"]>, number> = { subtle: 7, moderate: 14, heavy: 30 };
 
-function rulesText(style: EditStyle, cat: Catalog, assets: Asset[], maxLen: number) {
+function rulesText(style: EditStyle, cat: Catalog, assets: Asset[], maxLen: number, scored = false) {
   const intensity = style.intensity ?? "moderate";
   const music = style.music;
   const tracks = assets.filter((a) => a.kind === "music");
@@ -155,8 +120,9 @@ function rulesText(style: EditStyle, cat: Catalog, assets: Asset[], maxLen: numb
     `- Transitions you may use: ${style.transitions.join(", ")}. Transition length by default: ${style.transitionLength}s.`,
     `- Timeline effects you may use: ${style.effects ? (style.effects.length ? style.effects.join(", ") : "none") : "any in the library"}.`,
     `- Sounds you may use: ${style.sounds ? (style.sounds.length ? style.sounds.join(", ") : "none") : "any in the library"}.`,
-    `- Music: ${music?.on ? `yes${music.file ? ` (the outline names ${music.file})` : ""}${music.mood ? `, mood: ${music.mood}` : ""}, volume about ${music.volume}` +
-      (tracks.length ? `; tracks in assets/music: ${tracks.map((t) => `${t.name}${t.duration ? ` (${t.duration.toFixed(0)}s)` : ""}`).join(", ")}` : "; but assets/music is empty, so no music") : "no"}.`,
+    `- Music: ${scored ? "this clip has its own score, made for it; it plays under the whole clip, ducked under speech, so add no music effect"
+      : music?.on ? `yes${music.file ? ` (the outline names ${music.file})` : ""}${music.mood ? `, mood: ${music.mood}` : ""}, volume about ${music.volume}` +
+        (tracks.length ? `; tracks in assets/music: ${tracks.map((t) => `${t.name}${t.duration ? ` (${t.duration.toFixed(0)}s)` : ""}`).join(", ")}; start each clip at a different offset` : "; but assets/music is empty, so no music") : "no"}.`,
     `- Speed per part: ${MIN_SPEED}-${MAX_SPEED} (below 1 is slow motion). Freeze frame: up to ${MAX_FREEZE}s at a part's end. Reverse: parts up to ${MAX_REVERSE}s.`,
     `- The finished clip must stay under ${maxLen}s, so slow motion and freezes must fit.`,
     `- Amount: ${INTENSITY[intensity]}`,
@@ -184,12 +150,14 @@ ${p.clip}${p.title ? `\nHook card on screen at the start: "${p.title}"` : ""}
 # Effects library
 ${p.library}
 
-# Your files (assets/)
+# Files you can use
 ${p.assets}
 
 # How a professional edits
 - Every effect has a reason tied to a moment: a word, a reaction, a join. Put hits exactly on the word that lands
-  (zoom_punch/shake/flash/impact at "w23"), a whoosh under a transition, a riser that ends on a reveal.
+  (zoom_punch/shake/flash at "w23" with an impact sound), a whoosh under a transition, a riser that ends on a reveal.
+- Sounds are recorded files: "sfx" plays one from the built-in sounds or your files on a moment; "ambience" loops one
+  quietly under a stretch. Keep noise (hiss, crackle) out from under speech: on a phone it sounds like static.
 - Build toward the payoff; leave quiet moments quiet. Don't stack effects on the same moment unless it's the peak.
 - Sad or nostalgic: slow motion on a reaction, black and white memories, a muffled or reverb voice on the line that
   hurts, soft dips, low music, heartbeat or silence. Hype or anime: zoom punches, shakes, speed lines, flashes, impact
@@ -217,7 +185,7 @@ Times: "w12" (when word 12 starts), "w12.end", "p2" / "p2.end" (a part's start o
 type Plan = { key: string; name: string; idea: string; edit: Edit; notes: string[] };
 
 /** A concept as the LLM wrote it → an edit the renderer can build, keeping only what the rules allow. */
-function checkConcept(raw: any, key: string, base: Edit, style: EditStyle, cat: Catalog, assets: Asset[], segs: Segment[], maxLen: number): Plan | null {
+function checkConcept(raw: any, key: string, base: Edit, style: EditStyle, cat: Catalog, assets: Asset[], segs: Segment[], maxLen: number, scored = false): Plan | null {
   if (!raw || typeof raw !== "object") return null;
   const notes: string[] = [];
   const e: Edit = JSON.parse(JSON.stringify({ ...base, fx: [] }));
@@ -300,9 +268,9 @@ function checkConcept(raw: any, key: string, base: Edit, style: EditStyle, cat: 
       continue;
     }
     const d = r.def;
-    const allowed = d.kind === "music" ? !!style.music?.on : d.kind === "sound" ? !style.sounds || style.sounds.includes(d.name) : !style.effects || style.effects.includes(d.name);
+    const allowed = d.kind === "music" ? !!style.music?.on && !scored : d.kind === "sound" ? !style.sounds || style.sounds.includes(d.name) : !style.effects || style.effects.includes(d.name);
     if (!allowed) {
-      notes.push(d.kind === "music" ? "the outline doesn't ask for music" : `the outline doesn't allow ${d.name}`);
+      notes.push(d.kind === "music" ? (scored ? "this clip has its own score, so the plan's music was left out" : "the outline doesn't ask for music") : `the outline doesn't allow ${d.name}`);
       continue;
     }
     const id = JSON.stringify([r.use.fx, r.use.at, r.use.from, r.use.to]);
@@ -339,13 +307,15 @@ export async function designEdits(ctx: JobContext, runId: string) {
   const takeOutline = readText(join(dir, "outline.md")) || readText(OUTLINE_FILE);
   // The take's frozen settings, plus the ones added since it was made (music, effect lists, intensity), read
   // from the outline it was made with.
-  const style: EditStyle = { ...readEditStyle(takeOutline), ...(data.edit_style ?? {}) };
+  const style: EditStyle = takeStyle(takeOutline, data.edit_style);
   const brief = takeBrief(runId, data.video);
   const summary = brief.summary;
   const segs = readTranscript(data.video) ?? [];
   const vt = readVision(data.video);
   const cat = loadCatalog();
   const assets = await measureAssets(listAssets());
+  // What the planner is offered and checked against (no noise beds unless the outline asks for them).
+  const offered = offeredAssets(assets, takeOutline);
   const reference = referenceText(readReference());
   const lens = (readSetting(takeOutline, "Clip length") ?? "").match(/\d+/g) ?? [];
   const maxLen = (lens.length >= 2 ? Number(lens[1]) : 90) * 1.1 + 3;
@@ -354,7 +324,7 @@ export async function designEdits(ctx: JobContext, runId: string) {
   const lines = (a: number, b: number) => segs.filter((s) => s.end > a && s.start < b).map((s) => s.text);
   let cost = 0;
   const addCost = (c?: number) => ((cost += c ?? 0), ctx.addCost(c));
-  const out: DesignFile = { at: Date.now(), cost: 0, guide: brief.source === "llm" ? "llm" : "standard", inputs: designInputs(), clips: {} };
+  const out: DesignFile = { at: Date.now(), cost: 0, guide: brief.source === "llm" ? "llm" : "standard", clips: {} };
   const clips = data.clips.filter((c) => c.edit?.segments.length);
   ctx.log(`Designing ${clips.length} clip(s): the LLM plans two edits each from ${cat.effects.length} effects${assets.length ? ` and ${assets.length} files in assets/` : ""}, Jev picks`);
   for (const n of cat.notes) ctx.log(n, "warn");
@@ -374,31 +344,33 @@ export async function designEdits(ctx: JobContext, runId: string) {
     const base = c.edit!;
     const rec: DesignFile["clips"][string] = (out.clips[c.id] = { zooms: [], transitions: [] });
     const map0 = layout(base, style, cat, segs);
-    // 1. The LLM writes two plans.
+    const scored = !!scoreFor(runId, c.id);
+    // 1. The LLM writes two plans. One that can't be read is asked for again, once.
     let raws: any[] = [];
-    try {
+    for (let attempt = 0; attempt < 2 && !raws.length; attempt++) try {
       const prompt = PLAN_PROMPT({
-        brief: summary, outline: clipStr(takeOutline, 7000), reference, rules: rulesText(style, cat, assets, Math.round(maxLen)),
+        brief: summary, outline: clipStr(takeOutline, 7000), reference, rules: rulesText(style, cat, offered, Math.round(maxLen), scored),
         clip: clipText(base, map0, vt), title: base.title,
         captions: style.captions === "none" ? "there are no captions" : `captions sit ${style.position === "middle" ? "in the middle" : style.position === "bottom" ? "at the bottom" : "in the lower third"}${style.title ? `; the hook card is at the ${style.titlePosition} for the first ${style.titleSeconds}s` : ""}`,
         library: catalogText(cat, {
           camera: style.zooms, looks: style.looks, transitions: style.transitions,
-          timeline: (d: EffectDef) => d.kind === "music" ? !!style.music?.on : d.kind === "sound" ? !style.sounds || style.sounds.includes(d.name) : !style.effects || style.effects.includes(d.name),
+          timeline: (d: EffectDef) => d.kind === "music" ? !!style.music?.on && !scored : d.kind === "sound" ? !style.sounds || style.sounds.includes(d.name) : !style.effects || style.effects.includes(d.name),
         }),
-        assets: assetsText(assets),
+        assets: assetsText(offered),
       });
-      const res = await openrouter({ temperature: 0.8, ...WRITER, messages: [{ role: "user", content: prompt }] }, MODELS.plan, ctx.signal);
+      const res = await openrouter({ temperature: attempt ? 0.6 : 0.8, ...WRITER, messages: [{ role: "user", content: prompt }] }, MODELS.plan, ctx.signal);
       addCost(res.usage?.cost);
-      raws = (extractJson(res.content).concepts ?? []).slice(0, 3);
+      raws = (extractJson(res.content).concepts ?? []).filter((x: unknown) => x && typeof x === "object").slice(0, 3);
+      if (!raws.length) throw new Error("no plans in its answer");
       ctx.log(`Clip ${c.id}: ${res.model} wrote ${raws.length} edit plans ($${(res.usage?.cost ?? 0).toFixed(4)})`);
     } catch (err) {
       if (ctx.signal.aborted) throw err;
-      ctx.log(`Clip ${c.id}: the LLM couldn't plan it (${err instanceof Error ? err.message : err}); Jev picks moves instead`, "warn");
+      ctx.log(`Clip ${c.id}: the LLM's plan couldn't be read (${err instanceof Error ? err.message : err}); ${attempt ? "Jev picks moves instead" : "asking again"}`, "warn");
     }
     // 2. Code checks them, and ffmpeg test-runs each; a broken effect is found and dropped.
     const plans: Plan[] = [];
     for (const [i, raw] of raws.entries()) {
-      const pl = checkConcept(raw, String.fromCharCode(97 + i), base, style, cat, assets, segs, maxLen);
+      const pl = checkConcept(raw, String.fromCharCode(97 + i), base, style, cat, offered, segs, maxLen, scored);
       if (!pl) continue;
       const name = `clip_${String(c.id).padStart(2, "0")}_${pl.key}`;
       let t = await accepts(pl.edit, name);
@@ -425,7 +397,7 @@ export async function designEdits(ctx: JobContext, runId: string) {
       try {
         const d = await decide({
           brief: summary, ...(reference ? { style_reference: clipStr(reference, 2500) } : {}),
-          outline_editing_rules: clipStr(rulesText(style, cat, assets, Math.round(maxLen)), 1500),
+          outline_editing_rules: clipStr(rulesText(style, cat, offered, Math.round(maxLen), scored), 1500),
           clip_transcript: clipStr(base.segments.flatMap((s) => lines(s.start, s.end)).join("\n"), 3000),
           ...(vt ? { shot_log: visualsIn(vt, Math.min(...base.segments.map((s) => s.start)), Math.max(...base.segments.map((s) => s.end)), 10) } : {}),
         }, { plan: { type: "choice", instructions: "Which edit plan would a professional short-form editor choose for this clip? It must follow the outline's editing rules and tone, copy the style reference where asked, and serve the moment without distracting from it.", criteria } }, ctx.signal);
@@ -449,10 +421,15 @@ export async function designEdits(ctx: JobContext, runId: string) {
       c.edit = { ...chosen.edit, concept: { name: chosen.name, idea: chosen.idea } };
       ctx.log(`Clip ${c.id}: "${chosen.name}" (Jev ${Math.round((odds[chosen.key] ?? 1) * 100)}%): ${chosen.edit.fx?.length ?? 0} timeline effects${chosen.notes.length ? `; ${chosen.notes.length} note${chosen.notes.length > 1 ? "s" : ""}` : ""}`);
     } else {
+      // Moves only, from the picked parts: an earlier design's effects, speeds and freezes don't stay behind.
       rec.mode = "moves";
-      await moves(c.edit!, rec);
+      const e = c.edit!;
+      delete e.fx;
+      delete e.concept;
+      for (const s of e.segments) for (const k of ["fx", "speed", "freeze", "reverse"] as const) delete s[k];
+      await moves(e, rec);
     }
-    ctx.progress(0.62 * (++done / clips.length), `edits ${done}/${clips.length}`);
+    ctx.progress(0.98 * (++done / clips.length), `edits ${done}/${clips.length}`);
   }, ctx.signal);
   rmSync(testDir, { recursive: true, force: true });
 
@@ -535,56 +512,17 @@ export async function designEdits(ctx: JobContext, runId: string) {
     rec.transitions = trs.sort((a, b) => a.gap - b.gap);
   }
 
-  // Titles: the LLM writes options, Jev picks the hook card and keeps the emphasis words.
-  ctx.progress(0.65, "writing title options");
-  const clipLines = (c: (typeof data.clips)[number]) => {
-    const ranges = c.edit?.segments?.length ? c.edit.segments.map((s) => [s.start, s.end]) : [[c.start, c.end]];
-    return ranges.flatMap(([a, b]) => lines(a, b));
-  };
-  const { out: opts } = await writeOptions({ ...ctx, addCost }, brief, data.clips.map((c) => ({ id: c.id, lines: clipLines(c) })));
-  done = 0;
-  await pool(data.clips, 6, async (c) => {
-    const o = opts[c.id];
-    if (!o) return;
-    if (o.title) c.title = String(o.title).slice(0, 80);
-    if (o.why) c.reason = `${String(o.why).slice(0, 300)} (${c.reason ?? ""})`.slice(0, 900);
-    const hooks = (Array.isArray(o.hooks) ? o.hooks : []).map((h) => String(h).trim()).filter(Boolean).slice(0, 3);
-    const spoken = new Set(segs.filter((s) => s.end > c.start && s.start < c.end).flatMap((s) => (s.words ?? []).map((w) => norm(w.w))));
-    const candidates = [...new Set((Array.isArray(o.emphasis) ? o.emphasis : []).map(String).filter((w) => spoken.has(norm(w))))].slice(0, 5);
-    const q: Record<string, Question> = {};
-    const hookKeys = Object.fromEntries(hooks.map((h, i) => [String.fromCharCode(97 + i), h]));
-    if (style.title && hooks.length > 1) {
-      q.hook = { type: "choice", instructions: "Which hook card would make a scrolling viewer stop for this clip, fits the brief, and doesn't give away its payoff?", criteria: hookKeys };
-    }
-    candidates.forEach((w, i) => (q[`w${i}`] = { type: "noul", instructions: `The word "${w}" carries this clip's feeling or point, so it deserves to stand out in the captions.` }));
-    if (!Object.keys(q).length) return;
-    const d = await decide({ brief: summary, hook_card_guidance: brief.design.titleGuide, clip_transcript: clipStr(clipLines(c).join("\n"), 3000) }, q, ctx.signal);
-    addCost(d.cost);
-    const rec = out.clips[c.id] ?? (out.clips[c.id] = { zooms: [], transitions: [] });
-    const h = d.answers.hook;
-    if (c.edit && style.title) {
-      if (h?.type === "choice" && hookKeys[h.choice]) {
-        c.edit.title = hookKeys[h.choice].slice(0, 80);
-        rec.hook = { chosen: h.choice, p: h.probabilities[h.choice] ?? h.confidence, options: h.probabilities, texts: hookKeys };
-      } else if (hooks.length === 1) {
-        c.edit.title = hooks[0].slice(0, 80);
-      }
-    }
-    if (c.edit) {
-      const scored = candidates.map((w, i) => ({ w, p: noul(d.answers[`w${i}`]) })).sort((a, b) => b.p - a.p);
-      const kept = scored.filter((x) => x.p >= 0.55).slice(0, 3);
-      c.edit.emphasis = kept.map((x) => x.w);
-      rec.emphasis = scored.map((x) => ({ ...x, kept: kept.includes(x) }));
-    }
-    ctx.progress(0.7 + 0.28 * (++done / data.clips.length), `titles ${done}/${data.clips.length}`);
-  }, ctx.signal);
-
   // Changing a reviewed take's edit sends it back to review: you review what will actually be rendered.
   if (readReview(runId).approved) {
     setApproved(runId, false);
     ctx.log("This take was already reviewed; its edits changed, so it's back in review", "warn");
   }
   out.cost = cost;
+  out.inputs = designInputs(runId);
+  // Takes designed before Hook cards was its own step keep their hook cards in design.json. They move to
+  // titles.json before it's rewritten, so the step stays done and the clips keep the cards they were made with.
+  const legacy = existsSync(join(dir, "titles.json")) ? null : readTitles(runId);
+  if (legacy) writeFileSync(join(dir, "titles.json"), JSON.stringify(legacy, null, 1), "utf8");
   writeClipData(script, data);
   writeFileSync(join(dir, "design.json"), JSON.stringify(out, null, 1), "utf8");
   const planned = Object.values(out.clips).filter((c) => c.mode === "concepts").length;

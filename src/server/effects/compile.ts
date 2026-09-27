@@ -19,7 +19,7 @@ import type { VisionTranscript } from "../agents/vision";
 import { ASSETS_DIR, ASSET_FOLDERS, findAsset, type Asset } from "./assets";
 import { findEffect, TIMELINE_KINDS, type Catalog } from "./catalog";
 import { assColor, assText, assTime, fill, ffPath, isRtl, resolveParams, type Values } from "./template";
-import { layout, MAX_FREEZE, MAX_REVERSE, MAX_SPEED, MIN_SPEED, spanOf, wordsOf, type TimelineMap } from "./timeline";
+import { layout, MAX_FREEZE, MAX_REVERSE, MAX_SPEED, MIN_SPEED, spanOf, upgradeUse, wordsOf, type TimelineMap } from "./timeline";
 import type { EffectDef, FxUse } from "./types";
 
 const FPS = 30;
@@ -40,6 +40,12 @@ export type CompileInput = {
   name: string; out: string;
   /** Check only: run the graph for half a second (or this many seconds) into nothing. */
   test?: boolean | number;
+  /** The music made for this clip (the Music step): it plays under the whole clip, ducked under speech,
+   *  instead of any music the plan names. */
+  score?: { file: string; volume?: number; duck?: number; lufs?: number; seconds?: number };
+  /** Gain on the source's voice (dB) that brings it to dialogue level (-18 LUFS), measured by render.ts, so
+   *  music and sounds are mixed against a voice at a known level whatever the recording's own level. */
+  voiceGain?: number;
   /** Only these timeline effects (indexes into edit.fx), to find one that breaks. */
   onlyFx?: number[];
 };
@@ -51,9 +57,45 @@ export type Compiled = {
   files: Record<string, string>;
   map: TimelineMap;
   counts: { parts: number; joins: number; video: number; overlays: number; text: number; sounds: number; voice: number; music: number };
+  /** How the clip's score was fitted to its length, for the render log. */
+  fit?: string;
 };
 
 const r3 = (n: number) => n.toFixed(3);
+const mmss = (t: number) => `${Math.floor(t / 60)}:${(t % 60).toFixed(0).padStart(2, "0")}`;
+
+/**
+ * A score cut to its clip's length the way a music editor would. Lyria takes a requested length loosely
+ * (a minute for a 30-second clip), and its tracks end with a composed ending, so trimming at the clip's end
+ * would fade out mid-phrase. Instead the score keeps its opening and its ending and the difference comes
+ * out of the middle, or, when the score is short, a middle stretch plays twice. Either way it's one
+ * `x`-second crossfade at clip time j, placed where someone is talking so the ducked music hides it:
+ * the head is [0, j + x/2] of the score and the tail [L - T + j - x/2, L], which add up to T.
+ * Null when one join can't do it (a clip over twice its score's length): loop it instead.
+ */
+export function fitScore(L: number, T: number, words: { t: number; tEnd: number }[], x = 2): { pieces: [number, number][]; join?: number; how: string } | null {
+  if (!(L > 0) || !(T > 0)) return null;
+  const excess = L - T;
+  if (Math.abs(excess) < 0.05) return { pieces: [[0, L]], how: "fits as it is" };
+  if (excess > 0 && excess <= x + 1) return { pieces: [[excess, L]], how: `starts ${excess.toFixed(1)}s in, so its ending lands on the last frame` };
+  if (T < 4 * x) return excess > 0 ? { pieces: [[0, T]], how: "its opening only (the clip is short)" } : null;
+  // The head stops before the composed ending, and a repeat doesn't replay the first seconds.
+  const ending = Math.min(8, L / 4);
+  const lo = Math.max(0.3 * T, excess < 0 ? -excess + x / 2 + 2 : 0);
+  const hi = Math.min(0.7 * T, L - ending - x / 2);
+  if (lo > hi) return null;
+  const talk = (t: number) => words.reduce((n, w) => n + Math.max(0, Math.min(w.tEnd, t + x / 2 + 0.3) - Math.max(w.t, t - x / 2 - 0.3)), 0);
+  let j = (lo + hi) / 2, most = -Infinity;
+  for (let t = lo; t <= hi + 1e-6; t += 0.25) {
+    const s = talk(t) - Math.abs(t - (lo + hi) / 2) * 0.01; // on a tie, nearer the middle
+    if (s > most) (most = s), (j = t);
+  }
+  const where = `at ${mmss(j)}${talk(j) > x / 2 ? " under speech" : ""}`;
+  return {
+    pieces: [[0, j + x / 2], [L - T + j - x / 2, L]], join: j,
+    how: excess > 0 ? `kept its opening and its ending, ${excess.toFixed(1)}s taken out of the middle ${where}` : `${(-excess).toFixed(1)}s of its middle plays twice, joined ${where}`,
+  };
+}
 const even = (n: number) => Math.max(2, Math.round(n / 2) * 2);
 /** Frame-exact seconds, so trims split cleanly between frames. */
 const fr = (t: number) => Math.round(t * FPS) / FPS;
@@ -156,6 +198,10 @@ export function compileEdit(p: CompileInput): Compiled {
 
   // ── parts ──────────────────────────────────────────────────────────
   const grade = GRADES[style.grade] ?? "";
+  // The voice, cleaned of the recording's rumble and steady hiss (old TV and phone recordings hiss, and
+  // mastering to -14 LUFS lifts that hiss with everything else). afftdn follows the noise as it goes.
+  const cleanup = style.cleanup === "off" ? "" : `,highpass=f=70,afftdn=nr=${style.cleanup === "strong" ? 20 : 10}:nf=-50:tn=1`;
+  const voice = p.voiceGain ? `,volume=${p.voiceGain.toFixed(2)}dB` : "";
   const segmentSteps = (s: EditSegment, crop: boolean, frames: number, dur: number): string[] => {
     const ctx: Values = { W, H, fps: FPS, frames, dur };
     const fxDefs = (s.fx ?? []).map((u) => ({ u, def: findEffect(cat, u.fx, ["segment"]) })).filter((x) => {
@@ -224,7 +270,7 @@ export function compileEdit(p: CompileInput): Compiled {
     // Audio comes from one continuous read of the segment, so shot-level splits never click.
     const ai = addInput("-ss", r3(s.start), "-t", r3(dur), "-i", video);
     const full = outDur + freeze;
-    f.push(`[${ai}:a]asetpts=PTS-STARTPTS${speed !== 1 ? `,${atempo(speed)}` : ""},aresample=48000,aformat=channel_layouts=stereo${reverse ? ",areverse" : ""},apad=whole_dur=${r3(full)},atrim=0:${r3(full)}[a${i}]`);
+    f.push(`[${ai}:a]asetpts=PTS-STARTPTS${cleanup}${voice}${speed !== 1 ? `,${atempo(speed)}` : ""},aresample=48000,aformat=channel_layouts=stereo${reverse ? ",areverse" : ""},apad=whole_dur=${r3(full)},atrim=0:${r3(full)}[a${i}]`);
   });
 
   // ── joins ──────────────────────────────────────────────────────────
@@ -262,7 +308,13 @@ export function compileEdit(p: CompileInput): Compiled {
   type Placed = { u: FxUse; def: EffectDef; span: [number, number] };
   const placed: Placed[] = [];
   const own = (e.fx ?? []).map((u, k) => ({ u, k })).filter(({ k }) => !p.onlyFx || p.onlyFx.includes(k));
-  for (const { u } of [...own, ...joinFx.map((u) => ({ u, k: -1 }))]) {
+  for (const { u: u0 } of [...own, ...joinFx.map((u) => ({ u, k: -1 }))]) {
+    const u = upgradeUse(u0);
+    if (!u) continue;
+    if (p.score && findEffect(cat, u.fx, TIMELINE_KINDS)?.kind === "music") {
+      notes.push("this clip has its own score, so the plan's music was left out");
+      continue;
+    }
     const def = findEffect(cat, u.fx, TIMELINE_KINDS);
     if (!def) {
       notes.push(`"${u.fx}" isn't a timeline effect; skipped`);
@@ -432,6 +484,12 @@ export function compileEdit(p: CompileInput): Compiled {
       const k = addInput("-i", String(vals.file));
       const trim = pl.u.duration ? `atrim=duration=${r3(b0 - a0)},` : "";
       f.push(`[${k}:a]${trim}asetpts=PTS-STARTPTS,${toStereo},volume=${Number(vals.gain ?? 0.8)},${delay}[s${id}]`);
+    } else if (pl.def.special === "sfx_bed") {
+      // A recorded bed looped under the range, faded in and out.
+      const d = b0 - a0;
+      const fade = Math.min(Number(vals.fade ?? 0.6), d / 3);
+      const k = addInput("-stream_loop", "-1", "-i", String(vals.file));
+      f.push(`[${k}:a]atrim=duration=${r3(d)},asetpts=PTS-STARTPTS,${toStereo},volume=${Number(vals.gain ?? 0.3)}${fade > 0 ? `,afade=t=in:d=${r3(fade)},afade=t=out:st=${r3(d - fade)}:d=${r3(fade)}` : ""},${delay}[s${id}]`);
     } else {
       const src = tryFill(pl.def, pl.def.sound ?? "", vals);
       if (!src) continue;
@@ -442,37 +500,59 @@ export function compileEdit(p: CompileInput): Compiled {
     mix.push(`s${id}`);
     counts.sounds++;
   }
-  const music = placed.filter((x) => x.def.kind === "music");
-  if (music.length) {
-    // The voice is split once: one copy is mixed, the other tells every music bed when to duck.
-    f.push(`[${a}]asplit=${music.length + 1}[vmix]${music.map((_, i) => `[vsc${i}]`).join("")}`);
+  // Music: the clip's own score under the whole clip, or the beds the plan placed.
+  // Every bed is first brought to -16 LUFS, so `volume` means the same thing for every track (a loud master
+  // and a quiet one sit at the same level under a voice at -18).
+  const level = (lufs?: number) => (lufs === undefined ? 1 : Math.min(4, Math.max(0.1, Math.pow(10, (-16 - lufs) / 20))));
+  type Bed = { file: string; volume: number; duck: number; offset: number; fade: number; a0: number; b0: number; def?: EffectDef; fit?: ReturnType<typeof fitScore> };
+  const XFADE = 2;
+  const fit = p.score?.seconds ? fitScore(p.score.seconds, T, map.words, XFADE) : null;
+  const beds: Bed[] = p.score
+    ? [{ file: p.score.file, volume: (p.score.volume ?? style.music?.volume ?? 0.18) * level(p.score.lufs), duck: p.score.duck ?? 0.7, offset: 0, fade: 1.5, a0: 0, b0: T, fit }]
+    : placed.filter((x) => x.def.kind === "music").flatMap((pl) => {
+        const vals = valuesFor(pl.def, pl.u, ctxFor(pl));
+        const lufs = p.assets.find((as) => as.file === vals?.file)?.lufs;
+        return vals ? [{ file: String(vals.file), volume: Number(vals.volume ?? 0.25) * level(lufs), duck: Number(vals.duck ?? 0.7), offset: Number(vals.offset ?? 0), fade: Number(vals.fade ?? 1.5), a0: pl.span[0], b0: pl.span[1], def: pl.def }] : [];
+      });
+  if (beds.length) {
+    // The voice is split once: one copy is mixed, the others tell each music bed when to duck.
+    f.push(`[${a}]asplit=${beds.length + 1}[vmix]${beds.map((_, i) => `[vsc${i}]`).join("")}`);
     a = "vmix";
-    music.forEach((pl, i) => {
-      const [a0, b0] = pl.span;
-      const vals = valuesFor(pl.def, pl.u, ctxFor(pl));
-      if (!vals) {
-        f.push(`[vsc${i}]anullsink`);
-        return;
+    beds.forEach((b, i) => {
+      const d = b.b0 - b.a0;
+      const ratio = 1 + 15 * b.duck;
+      if (b.fit) {
+        // A fitted score: each piece read straight from the file, crossfaded (equal power, so the join
+        // doesn't dip). Its own ending plays out, so only a short fade guards the last frame; a score
+        // that starts late fades in.
+        const ks = b.fit.pieces.map(([s0, s1]) => addInput("-ss", r3(s0), "-t", r3(s1 - s0), "-i", b.file));
+        ks.forEach((k, j) => f.push(`[${k}:a]asetpts=PTS-STARTPTS,${toStereo}[mp${i}_${j}]`));
+        let cur = `mp${i}_0`;
+        for (let j = 1; j < ks.length; j++) {
+          f.push(`[${cur}][mp${i}_${j}]acrossfade=d=${XFADE}:c1=qsin:c2=qsin[mx${i}_${j}]`);
+          cur = `mx${i}_${j}`;
+        }
+        const [first, last] = [b.fit.pieces[0], b.fit.pieces[b.fit.pieces.length - 1]];
+        const fin = first[0] > 0.05 ? 1 : 0.3, fout = Math.abs(last[1] - (p.score?.seconds ?? 0)) < 0.05 ? 0.3 : Math.min(1.5, d / 3);
+        f.push(`[${cur}]volume=${b.volume.toFixed(4)},afade=t=in:d=${fin},afade=t=out:st=${r3(d - fout)}:d=${fout},apad=whole_dur=${r3(T)}[mu${i}]`);
+      } else {
+        const fade = Math.min(b.fade, d / 3);
+        const k = addInput("-stream_loop", "-1", "-i", b.file);
+        f.push(`[${k}:a]atrim=start=${r3(b.offset)}:duration=${r3(d)},asetpts=PTS-STARTPTS,${toStereo},volume=${b.volume.toFixed(4)}` +
+          `${fade > 0 ? `,afade=t=in:d=${r3(fade)},afade=t=out:st=${r3(d - fade)}:d=${r3(fade)}` : ""},adelay=${Math.round(b.a0 * 1000)}:all=1,apad=whole_dur=${r3(T)}[mu${i}]`);
       }
-      const d = b0 - a0;
-      const fade = Math.min(Number(vals.fade ?? 1.5), d / 3);
-      const k = addInput("-stream_loop", "-1", "-i", String(vals.file));
-      const ratio = 1 + 15 * Number(vals.duck ?? 0.7);
-      f.push(`[${k}:a]atrim=start=${r3(Number(vals.offset ?? 0))}:duration=${r3(d)},asetpts=PTS-STARTPTS,${toStereo},volume=${Number(vals.volume ?? 0.25)}` +
-        `${fade > 0 ? `,afade=t=in:d=${r3(fade)},afade=t=out:st=${r3(d - fade)}:d=${r3(fade)}` : ""},adelay=${Math.round(a0 * 1000)}:all=1,apad=whole_dur=${r3(T)}[mu${i}]`);
       f.push(`[mu${i}][vsc${i}]sidechaincompress=threshold=0.02:ratio=${ratio.toFixed(1)}:attack=15:release=450[md${i}]`);
-      use(pl.def);
+      if (b.def) use(b.def);
       mix.push(`md${i}`);
       counts.music++;
     });
   }
   const aIn = style.fades ? 0.5 : 0.04, aOut = style.fades ? 1.2 : 0.08;
   const fades = `afade=t=in:d=${aIn},afade=t=out:st=${r3(Math.max(0, T - aOut))}:d=${aOut}`;
-  // Mastering: the mix brought to the outline's loudness (-14 LUFS unless it says otherwise), peaks held
-  // under -1.5 dBTP. Sources are often far quieter (an old TV recording sat around -35 dB). loudnorm works at
-  // 192 kHz, so resample after it.
-  const loud = style.loudness === undefined ? -14 : style.loudness;
-  const master = loud === null ? "alimiter=limit=0.95:level=0" : `loudnorm=I=${loud}:TP=-1.5:LRA=11,aresample=48000`;
+  // A safety limiter only. Loudness is set after the render (render.ts): one gain for the whole clip,
+  // measured, so quiet moments aren't lifted more than loud ones (an adaptive loudnorm here pumped the
+  // hiss up in every pause).
+  const master = "alimiter=limit=0.95:level=0";
   if (mix.length) f.push(`[${a}]${mix.map((m) => `[${m}]`).join("")}amix=inputs=${mix.length + 1}:duration=first:dropout_transition=0:normalize=0,${master},${fades}[aout]`);
   else f.push(`[${a}]${master},${fades}[aout]`);
 
@@ -488,6 +568,7 @@ export function compileEdit(p: CompileInput): Compiled {
   return {
     args: ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1", "-nostats", ...inputs, ...graphArgs, "-map", "[vout]", "-map", "[aout]", ...outArgs],
     duration: T, notes: [...new Set(notes)], used, assets: usedAssets, files, map, counts,
+    ...(p.score ? { fit: fit ? fit.how : p.score.seconds ? "looped (the clip runs over twice its length)" : "looped and cut to the clip (its length wasn't measured)" } : {}),
   };
 }
 
@@ -521,7 +602,10 @@ export function editDeps(e: Edit, cat: Catalog, assets: Asset[]): { library: boo
     for (const ar of d?.around ?? []) add(findEffect(cat, ar.fx, TIMELINE_KINDS));
     if (d?.special === "asset_transition") add(findEffect(cat, "overlay", ["asset"]), gap.params);
   }
-  for (const u of e.fx ?? []) add(findEffect(cat, u.fx, TIMELINE_KINDS), u.params);
+  for (const u0 of e.fx ?? []) {
+    const u = upgradeUse(u0);
+    if (u) add(findEffect(cat, u.fx, TIMELINE_KINDS), u.params);
+  }
   const library = !!e.fx?.length ||
     e.segments.some((s) => s.fx?.length || s.freeze || s.reverse || (s.speed !== undefined && (s.speed < 0.8 || s.speed > 1.5))) ||
     e.transitions.some((g) => typeof g !== "string" || !LEGACY_TRANSITIONS.has(g));

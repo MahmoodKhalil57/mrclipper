@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { DATA_DIR } from "./config";
 
 /** Job kinds, named after the canvas nodes they belong to ("workflow" is the ▶ Run that sequences them). */
-export type AgentName = "source" | "refclip" | "transcript" | "refstyle" | "brief" | "pick" | "design" | "render" | "check" | "coach" | "workflow";
+export type AgentName = "source" | "refclip" | "transcript" | "shots" | "refstyle" | "brief" | "pick" | "titles" | "music" | "design" | "render" | "check" | "coach" | "workflow";
 export type JobStatus = "running" | "done" | "failed" | "cancelled";
 export type LogEntry = { t: number; level: "info" | "warn" | "error"; msg: string };
 

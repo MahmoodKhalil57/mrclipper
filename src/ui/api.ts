@@ -4,7 +4,7 @@ import { pushStoredKey } from "./Key";
 /** The three MCP crew servers (Director tool calls are labelled by them). */
 export type AgentKey = "transcribe" | "plan" | "extract";
 /** Job kinds, named after the canvas nodes they belong to; "workflow" is ▶ Run. */
-export type JobAgent = "source" | "refclip" | "transcript" | "refstyle" | "brief" | "pick" | "design" | "render" | "check" | "coach" | "workflow";
+export type JobAgent = "source" | "refclip" | "transcript" | "shots" | "refstyle" | "brief" | "pick" | "titles" | "music" | "design" | "render" | "check" | "coach" | "workflow";
 
 export type Job = {
   id: string;
@@ -24,10 +24,11 @@ export type Job = {
 
 // ── The workflow (computed by the server, workflow.ts) ───────────────
 
-export type NodeId = "source" | "outline" | "refclip" | "guide" | "transcript" | "refstyle" | "brief" | "pick" | "design" | "render" | "check" | "review" | "coach";
+export type NodeId = "source" | "outline" | "refclip" | "guide" | "transcript" | "shots" | "refstyle" | "brief" | "pick" | "titles" | "music" | "design" | "render" | "check" | "review" | "coach";
 export type NodeState = "empty" | "optional" | "locked" | "ready" | "stale" | "running" | "waiting" | "done" | "failed" | "stopped";
 export type Who = "you" | "transcriber" | "llm" | "jev" | "code";
-export type WfNode = { id: NodeId; phase: number; who: Who; state: NodeState; reason?: string; facts: [string, string][]; job?: string; cost?: number };
+/** canRun: an optional step you can still run by hand (Music, when the outline doesn't ask for it). */
+export type WfNode = { id: NodeId; phase: number; who: Who; state: NodeState; reason?: string; facts: [string, string][]; job?: string; cost?: number; canRun?: boolean };
 /** Pick's settings: its inputs for a take, besides the brief, your notes and the transcript. */
 export type PickSettings = { direction: string; count: number | null };
 export type TakeRef = {
@@ -103,6 +104,8 @@ export type DesignConcept = { key: string; name: string; idea: string; p: number
 export type DesignRun = {
   at: number; cost: number; guide?: "llm" | "standard";
   inputs?: { version: number; effects: string; assets: string };
+  /** Music Lyria made for the outline's mood: made in this design, or reused from an earlier one. */
+  music?: { name: string; file: string; model: string; seconds: number; cost: number; made: boolean; options: { key: string; name: string; prompt: string }[]; odds: Record<string, number>; chosen: string };
   clips: Record<string, {
     zooms: { piece: number; zoom: string; p: number; options: Record<string, number>; flashback?: number; varied?: boolean; ending?: boolean; ending_p?: number }[];
     transitions: { gap: number; transition: string; p: number; options: Record<string, number> }[];
@@ -120,7 +123,7 @@ export type ParamSpec =
   | { type: "text"; default?: string; max?: number; doc?: string }
   | { type: "asset"; kinds: string[]; doc?: string };
 export type EffectInfo = { name: string; kind: FxKind; timing: "whole" | "range" | "instant"; description: string; tags: string[]; params?: Record<string, ParamSpec>; duration?: number; origin?: "builtin" | "workspace" };
-export type AssetInfo = { kind: "sfx" | "music" | "overlay" | "image" | "lut" | "font"; name: string; file: string; size: number; duration?: number };
+export type AssetInfo = { kind: "sfx" | "music" | "overlay" | "image" | "lut" | "font"; name: string; url: string; size: number; duration?: number; builtin?: boolean; description?: string };
 export type EffectsLibrary = { effects: EffectInfo[]; notes: string[]; assets: AssetInfo[]; folders: Record<AssetInfo["kind"], string>; assetsDir: string; effectsDir: string };
 export type EdgeCheck = {
   start: number; end: number; start_clean: number; end_clean: number; standalone: number;
@@ -130,9 +133,19 @@ export type CheckRun = {
   at: number; model: string; cost: number; rules: CheckRule[];
   clips: Record<string, { mtime: number; at: number; watched: boolean; rules: Record<string, number>; followed: number; edges: EdgeCheck | null }>;
 };
+/** Hook cards: the options per clip with Jev's odds, and the emphasis words it kept. */
+export type TitlesRun = {
+  at: number; cost: number;
+  clips: Record<string, { hook?: { chosen: string; p: number; options: Record<string, number>; texts: Record<string, string> }; emphasis?: { w: string; p: number; kept: boolean }[] }>;
+};
+/** Music: the score Lyria made for each clip, from the prompt Jev picked. */
+export type MusicRun = {
+  at: number; cost: number;
+  clips: Record<string, { file: string; name: string; model: string; seconds: number; lufs?: number; cost: number; options: { key: string; name: string; prompt: string }[]; odds: Record<string, number>; chosen: string }>;
+};
 export type Run = {
   id: string; videoStem: string; created: string; script: string; aspect?: string; clips: Clip[]; review: Review;
-  jev: PickRun | null; design: DesignRun | null; check: CheckRun | null;
+  jev: PickRun | null; design: DesignRun | null; check: CheckRun | null; titles?: TitlesRun | null; music?: MusicRun | null;
   info: { video: string; created: number; notes?: string; inputs: { outline: string; reference: string; brief: string } } | null;
 };
 export type Video = {

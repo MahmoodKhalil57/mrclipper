@@ -86,7 +86,7 @@ const TIMELINE_ALIASES: Record<string, string> = {
   bw: "black_white", black_and_white: "black_white", monochrome: "black_white", sepia: "sepia_tone",
   zoom_out: "pull_back", slow_push: "zoom_in", push_in: "zoom_in", punch_in: "zoom_punch", camera_shake: "shake",
   fade_to_black: "dip", dip_black: "dip", dip_to_black: "dip", fade_black: "dip", fadeblack: "dip", flash_cut: "flash", white_flash: "flash",
-  fadewhite: "flash", text: "big_text", title: "banner", heart_beat: "heartbeat", record_crackle: "vinyl", crackle: "vinyl",
+  fadewhite: "flash", text: "big_text", title: "banner",
 };
 
 /** An effect by name among some kinds (a transition's name and a timeline effect's can be the same). */
@@ -137,7 +137,7 @@ export function catalogText(cat: Catalog, allow: { camera?: string[]; looks?: st
     ...group("Graphics laid over the clip (\"timeline\")", tl("graphic")),
     ...group("Text and shapes (\"timeline\"; write text in the clip's language)", tl("text")),
     ...group("Your files laid over the clip (\"timeline\")", tl("asset")),
-    ...group("Sounds (\"timeline\")", tl("sound")),
+    ...group("Sounds (\"timeline\"; the recorded sounds are listed with the files below)", tl("sound")),
     ...group("The clip's own audio (\"timeline\")", tl("voice")),
     ...group("Music (\"timeline\")", tl("music")),
   ].join("\n");

@@ -1,6 +1,6 @@
 // Phase 4 · Make, one take at a time: Pick clips → Design edits → Render → Check.
-import { useEffect, useState } from "react";
-import { actions, fileUrl, uploadVideo, type AssetInfo, type Clip, type DesignConcept, type EffectInfo, type EffectsLibrary, type FxKind, type Started } from "../api";
+import { useEffect, useRef, useState } from "react";
+import { actions, fileUrl, uploadVideo, type AssetInfo, type Clip, type DesignConcept, type EffectInfo, type EffectsLibrary, type FxKind, type Started, type TitlesRun } from "../api";
 import { JobCard, UP_TO_DATE } from "../Common";
 import { tc } from "../util";
 import { Bar, EdgeQa, EditTimeline, Odds, PickBreakdown, StepTrigger, gapName, nodeJob, useGuard, type PanelProps } from "./shared";
@@ -126,6 +126,107 @@ export function PickPanel(p: PanelProps) {
   );
 }
 
+// ── Hook cards ───────────────────────────────────────────────────────
+
+export function TitlesPanel(p: PanelProps) {
+  const run = p.run;
+  const job = nodeJob(p, "titles");
+  if (!run) return <div className="empty-panel"><p>No take yet. Pick clips first.</p></div>;
+  // Takes designed before this was its own step kept their hook cards in design.json.
+  const legacy = (run.design?.clips ?? {}) as Record<string, TitlesRun["clips"][string]>;
+  const t: TitlesRun | null = run.titles ?? (run.design ? { at: run.design.at, cost: 0, clips: Object.fromEntries(Object.entries(legacy).filter(([, c]) => c.hook || c.emphasis)) } : null);
+  const has = t && Object.keys(t.clips).length > 0;
+  return (
+    <div className="stack">
+      <div className="card row">
+        <div className="grow">
+          <b>{has ? `${Object.values(t!.clips).filter((c) => c.hook).length} hook cards` : "No hook cards yet"}</b>
+          <div className="hint">One LLM call writes three hook cards per clip in its own language, and the words that could carry its feeling. Jev picks the hook card most likely to stop a scroller and keeps up to three words to stress in the captions.{t?.cost ? ` $${t.cost.toFixed(3)}` : ""}</div>
+        </div>
+        {job?.status === "running" ? <button className="btn danger" onClick={() => p.stop(job.id)}>■ Stop</button>
+          : <StepTrigger p={p} id="titles" first="Write hooks" again="Rewrite" args={{ take: run.id }} />}
+      </div>
+      {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}
+      {has && run.clips.map((c) => {
+        const ct = t!.clips[c.id];
+        if (!ct) return null;
+        return (
+          <div key={c.id} className="card stack-sm design-clip">
+            <div className="row"><span className="clip-num">{c.id}</span><span className="clip-title grow" dir="auto">{c.title}</span></div>
+            {ct.hook && (
+              <div className="hooks">
+                {Object.entries(ct.hook.texts).map(([k, text]) => (
+                  <div key={k} className={`hook-opt ${k === ct.hook!.chosen ? "on" : ""}`}>
+                    <span className="mono">{Math.round((ct.hook!.options[k] ?? 0) * 100)}%</span>
+                    <span dir="auto">{text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {ct.emphasis?.length ? (
+              <div className="design-chips">
+                {ct.emphasis.map((w) => <span key={w.w} className={w.kept ? "pref" : ""} dir="auto" title={`Jev ${Math.round(w.p * 100)}%`}>{w.w} {Math.round(w.p * 100)}%</span>)}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Music ────────────────────────────────────────────────────────────
+
+export function MusicPanel(p: PanelProps) {
+  const run = p.run;
+  const job = nodeJob(p, "music");
+  const node = p.wf.nodes.music;
+  if (!run) return <div className="empty-panel"><p>No take yet. Pick clips first.</p></div>;
+  const m = run.music;
+  const scored = m ? Object.keys(m.clips).length : 0;
+  const running = job?.status === "running";
+  return (
+    <div className="stack">
+      <div className="card row">
+        <div className="grow">
+          <b>{scored ? `${scored} of ${run.clips.length} clips scored` : "No scores yet"}</b>
+          <div className="hint">
+            Each clip gets music made for it. The LLM reads the clip (what's said and when, how long it runs) with the outline's music notes and writes three prompts shaped to its moments; Jev picks one; Google's Lyria 3 makes it, about $0.08 a clip. A score plays under its whole clip, ducked under speech, and is made once: redesigning or re-rendering reuses it.
+            {m?.cost ? ` So far $${m.cost.toFixed(2)}.` : ""}
+          </div>
+          {node.reason && <div className={`hint ${node.state === "optional" ? "" : "warn-text"}`}>{node.reason}</div>}
+        </div>
+        {running ? <button className="btn danger" onClick={() => p.stop(job!.id)}>■ Stop</button>
+          : node.state === "done" ? <button className="btn up-to-date" disabled title={UP_TO_DATE}>✓ Up to date</button>
+          : <button className="btn primary" disabled={node.state === "locked"} onClick={() => p.step("music", { take: run.id })}>▶ Score clips</button>}
+      </div>
+      {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}
+      {m && run.clips.map((c) => {
+        const s = m.clips[c.id];
+        if (!s) return null;
+        return (
+          <div key={c.id} className="card stack-sm music-card">
+            <div className="row">
+              <span className="clip-num">{c.id}</span>
+              <span className="clip-title grow" dir="auto">{c.title}</span>
+              <span className="mono faint">{s.seconds.toFixed(0)}s · {s.model.split("/").pop()} · ${s.cost.toFixed(2)}</span>
+            </div>
+            <audio controls preload="none" src={fileUrl(`${run.script.replace(/\/[^/]+$/, "")}/${s.file}`)} />
+            <div className="hooks">
+              {s.options.map((o) => (
+                <div key={o.key} className={`hook-opt ${o.key === s.chosen ? "on" : ""}`} title={o.prompt}>
+                  <span className="mono">{Math.round((s.odds[o.key] ?? 0) * 100)}%</span>
+                  <span><b>{o.name}</b> · {o.prompt}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Design edits ─────────────────────────────────────────────────────
 
 const KIND_TITLE: Record<FxKind, string> = {
@@ -134,12 +235,27 @@ const KIND_TITLE: Record<FxKind, string> = {
 };
 const FOLDER_LABEL: Record<AssetInfo["kind"], string> = { sfx: "Sound effects", music: "Music", overlay: "Overlays (GIF, WebM, MOV)", image: "Images", lut: "LUTs", font: "Fonts" };
 
+/** One file: click to hear a sound or music, or open anything else. */
+function AssetChip({ a, play }: { a: AssetInfo; play: (url: string) => void }) {
+  const audio = a.kind === "sfx" || a.kind === "music";
+  const label = <>{audio ? "▶ " : ""}{a.name}{a.duration ? <span className="faint"> {a.duration.toFixed(1)}s</span> : null}</>;
+  return audio
+    ? <button className="chip-btn" title={a.description ?? a.name} onClick={() => play(a.url)}>{label}</button>
+    : <a href={a.url} target="_blank" rel="noreferrer" title={a.name}>{label}</a>;
+}
+
 /** The effects library the planner draws from, and your files in assets/: browse, add, open the folder. */
 function LibraryCard({ p }: { p: PanelProps }) {
   const [lib, setLib] = useState<EffectsLibrary | null>(null);
   const [q, setQ] = useState("");
   const [kind, setKind] = useState<AssetInfo["kind"]>("sfx");
   const [busy, setBusy] = useState<number | null>(null);
+  const player = useRef<HTMLAudioElement | null>(null);
+  const play = (url: string) => {
+    player.current?.pause();
+    player.current = new Audio(url);
+    player.current.play().catch(() => {});
+  };
   const load = () => actions.effects().then(setLib).catch(() => setLib(null));
   useEffect(() => {
     load();
@@ -157,6 +273,8 @@ function LibraryCard({ p }: { p: PanelProps }) {
     load();
     p.refresh();
   };
+  const mine = lib.assets.filter((a) => !a.builtin);
+  const builtin = lib.assets.filter((a) => a.builtin);
   const needle = q.trim().toLowerCase();
   const match = (e: EffectInfo) => !needle || e.name.includes(needle.replace(/\s+/g, "_")) || e.description.toLowerCase().includes(needle) || e.tags.some((t) => t.includes(needle));
   const xfades = lib.effects.filter((e) => e.kind === "transition" && e.tags.includes("xfade"));
@@ -181,19 +299,25 @@ function LibraryCard({ p }: { p: PanelProps }) {
         </label>
         {busy !== null && <span className="mono faint">{Math.round(busy * 100)}%</span>}
       </div>
-      {lib.assets.length > 0 && (
+      {mine.length > 0 && (
         <div className="asset-groups">
-          {(Object.keys(FOLDER_LABEL) as AssetInfo["kind"][]).filter((k) => lib.assets.some((a) => a.kind === k)).map((k) => (
+          {(Object.keys(FOLDER_LABEL) as AssetInfo["kind"][]).filter((k) => mine.some((a) => a.kind === k)).map((k) => (
             <div key={k} className="asset-group">
               <span className="label">{FOLDER_LABEL[k]}</span>
               <div className="design-chips">
-                {lib.assets.filter((a) => a.kind === k).map((a) => (
-                  <a key={a.file} href={fileUrl(a.file)} target="_blank" rel="noreferrer" title={a.file}>{a.name}{a.duration ? <span className="faint"> {a.duration.toFixed(1)}s</span> : null}</a>
-                ))}
+                {mine.filter((a) => a.kind === k).map((a) => <AssetChip key={a.url} a={a} play={play} />)}
               </div>
             </div>
           ))}
         </div>
+      )}
+      {builtin.length > 0 && (
+        <details className="runners">
+          <summary>{builtin.length} recorded sounds built in (CC0, from Freesound)</summary>
+          <div className="design-chips" style={{ marginTop: 6 }}>
+            {builtin.map((a) => <AssetChip key={a.url} a={a} play={play} />)}
+          </div>
+        </details>
       )}
       {lib.notes.map((n) => <div key={n} className="hint warn-text">{n}</div>)}
       <details className="runners">
@@ -263,7 +387,7 @@ export function DesignPanel(p: PanelProps) {
   const d = run.design;
   const planned = d ? Object.values(d.clips).filter((c) => c.mode === "concepts").length : 0;
   const effects = run.clips.reduce((n, c) => n + (c.edit?.fx?.length ?? 0), 0);
-  const decisions = d ? Object.values(d.clips).reduce((n, c) => n + c.zooms.length + c.transitions.length + (c.hook ? 1 : 0) + (c.emphasis?.length ?? 0), 0) : 0;
+  const decisions = d ? Object.values(d.clips).reduce((n, c) => n + c.zooms.length + c.transitions.length, 0) : 0;
   return (
     <div className="stack">
       <div className="card row">
@@ -271,8 +395,8 @@ export function DesignPanel(p: PanelProps) {
           <b>{!d ? "Not designed yet" : planned ? `${planned} clip${planned === 1 ? "" : "s"} planned · ${effects} effect${effects === 1 ? "" : "s"}` : `${decisions} Jev choices`}</b>
           <div className="hint">
             {!d
-              ? "The LLM plans two edits per clip from the effects library and your files, code checks and test-renders them, and Jev picks one. Then the hook card and emphasis words."
-              : `${planned ? "The LLM planned two edits per clip; Jev picked" : "Jev picked a move per part and a transition per join"} · the LLM wrote hook-card options, Jev picked · $${d.cost.toFixed(3)}`}
+              ? "The LLM plans two edits per clip from the effects library and your files, code checks and test-renders them, and Jev picks one."
+              : `${planned ? "The LLM planned two edits per clip; Jev picked" : "Jev picked a move per part and a transition per join"} · $${d.cost.toFixed(3)}`}
           </div>
           {node.state === "stale" && node.reason && <div className="hint warn-text">{node.reason}</div>}
         </div>
@@ -290,16 +414,6 @@ export function DesignPanel(p: PanelProps) {
             <div className="row"><span className="clip-num">{c.id}</span><span className="clip-title grow" dir="auto">{c.title}</span></div>
             {cd.concepts?.length ? <Concepts list={cd.concepts} /> : null}
             <EditTimeline edit={c.edit} timeline={c.timeline} />
-            {cd.hook && (
-              <div className="hooks">
-                {Object.entries(cd.hook.texts).map(([k, text]) => (
-                  <div key={k} className={`hook-opt ${k === cd.hook!.chosen ? "on" : ""}`}>
-                    <span className="mono">{Math.round((cd.hook!.options[k] ?? 0) * 100)}%</span>
-                    <span dir="auto">{text}</span>
-                  </div>
-                ))}
-              </div>
-            )}
             {cd.mode !== "concepts" && c.edit.segments.map((s, i) => {
               const z = cd.zooms.find((x) => x.piece === i + 1);
               const t = i > 0 ? cd.transitions.find((x) => x.gap === i) : undefined;
@@ -325,11 +439,6 @@ export function DesignPanel(p: PanelProps) {
                 </div>
               );
             })}
-            {cd.emphasis?.length ? (
-              <div className="design-chips">
-                {cd.emphasis.map((w) => <span key={w.w} className={w.kept ? "pref" : ""} dir="auto" title={`Jev ${Math.round(w.p * 100)}%`}>{w.w} {Math.round(w.p * 100)}%</span>)}
-              </div>
-            ) : null}
           </div>
         );
       })}

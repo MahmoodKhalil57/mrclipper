@@ -7,6 +7,25 @@ import { nodeJob, useGuard, type PanelProps } from "./shared";
 
 export function SourcePanel(p: PanelProps) {
   const v = p.video;
+  const [url, setUrl] = useState("");
+  const [up, setUp] = useState<number | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null);
+  // The import started here, or one already running (from the top bar or the Director).
+  const job = p.jobs.find((j) => j.id === jobId) ?? p.jobs.find((j) => j.agent === "source" && j.status === "running");
+  const importLink = async () => {
+    try {
+      const r = await actions.importUrl(url.trim());
+      setUrl("");
+      setJobId(r.job_id);
+      p.addVideo(null, r.job_id);
+    } catch (e) {
+      p.toast((e as Error).message, "err");
+    }
+  };
+  const upload = (f: File) => {
+    setUp(0);
+    uploadVideo(f, setUp).then((r) => p.addVideo(r.video)).catch((e) => p.toast((e as Error).message, "err")).finally(() => setUp(null));
+  };
   return (
     <div className="stack">
       <video className="player" src={fileUrl(v.path)} controls preload="metadata" poster={thumbUrl(v.name, v.duration * 0.18)} />
@@ -17,7 +36,20 @@ export function SourcePanel(p: PanelProps) {
         <div><span>File</span><b className="mono" dir="auto">{v.path}</b></div>
         <div><span>Takes</span><b>{p.wf.takes.length}</b></div>
       </div>
-      <div className="hint">Add another video with <b>+ Add video</b> in the top bar; each video is its own project.</div>
+      <div className="card stack-sm">
+        <div className="label">Add another video</div>
+        <div className="hint">From a link or a file. It becomes its own project, with its own transcript and takes, and this one stays as it is. Links download with yt-dlp, so YouTube, TikTok, Instagram, X, Vimeo and most video sites work.</div>
+        <div className="row">
+          <input className="field grow" placeholder="Paste a link: YouTube, TikTok, Instagram, X, Vimeo…" value={url} onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && url.trim() && job?.status !== "running" && importLink()} />
+          <button className="btn sm" disabled={!url.trim() || job?.status === "running"} onClick={importLink}>Import</button>
+        </div>
+        <label className="btn sm file-btn">
+          {up !== null ? `Uploading ${Math.round(up * 100)}%` : "Choose a video file…"}
+          <input type="file" accept="video/*,.mkv" hidden disabled={up !== null} onChange={(e) => e.target.files?.[0] && upload(e.target.files[0])} />
+        </label>
+        {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}
+      </div>
     </div>
   );
 }

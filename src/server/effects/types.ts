@@ -49,7 +49,7 @@ export type EffectDef = {
   around?: { fx: string; params?: Record<string, unknown> }[];
   /** sound: a lavfi audio source graph making the sound, `dur` seconds long (or a graph ending in [out]). */
   sound?: string;
-  special?: "asset" | "music" | "sfx_file" | "asset_transition";
+  special?: "asset" | "music" | "sfx_file" | "sfx_bed" | "asset_transition";
   /** Where the definition came from: built in, or a file in the workspace's effects/ folder. */
   origin?: "builtin" | "workspace";
 };

@@ -73,14 +73,16 @@ Effects are what the editor may put on a clip's timeline: text, graphics, your G
 
 ## Music
 
-Music comes from your files in `assets/music` (name them for their mood, like `sad_piano_slow.mp3`), ducked under speech. Add a **Music mood:** line to say which kind fits.
+Music comes from your files in `assets/music` (name them for their mood, like `sad_piano_slow.mp3`), ducked under speech. Add a **Music mood:** line to say which kind fits. With **Background music:** `yes` and **Music source:** `generate`, Google's Lyria 3 makes a score for each clip instead, following its moments: about $0.08 a clip (`generate clip` makes 30 seconds for $0.04), made once per clip. Anything you write in this section steers the scores.
 
 - **Background music:** no
+- **Music source:** my files
 - **Music volume:** low
 - **Sound effects:** any
 - **Loudness:** -14 LUFS
+- **Voice cleanup:** light
 
-Sound effects are generated (`whoosh`, `impact`, `riser`, `pop`, `ding`, `heartbeat`…) or your files in `assets/sfx`: `any`, `no`, or the names you allow. Loudness masters every clip; short-form apps play at about -14 LUFS.
+Sound effects come from the built-in library of recorded sounds (whooshes, risers, hits, booms, heartbeats, a camera shutter, a record scratch, laughter, applause…) and your files in `assets/sfx`: `any`, `no`, or the names you allow. Vinyl crackle and room tone are used only if you ask for them here by name. Loudness masters every clip; short-form apps play at about -14 LUFS. Voice cleanup takes rumble and hiss out of the clip's own voice: `light`, `strong` or `off`.
 
 ## Previous clip attempts
 

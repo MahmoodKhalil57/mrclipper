@@ -12,6 +12,8 @@ export type PanelProps = {
   toast: (msg: string, kind?: "err" | "ok") => void;
   step: (id: NodeId, args?: StepArgs) => void;
   selectTake: (id: string | null) => void;
+  /** Another video: uploaded (its name), or importing from a link (the job). It becomes the project when it's in. */
+  addVideo: (video: string | null, jobId?: string) => void;
 };
 
 /** The job currently attached to a node (running, or the last one). */

@@ -1,9 +1,9 @@
-// The workflow: thirteen nodes in six phases, one rule for who does what.
+// The workflow: sixteen nodes in six phases, one rule for who does what.
 //
 //   1 Inputs      Source video · Outline · Reference clip · Copy guide           (you)
-//   2 Understand  Transcript · Reference style                                   (Transcriber: code + perception models)
+//   2 Understand  Transcript · Shots · Reference style                           (Transcriber: code + perception models)
 //   3 Brief       Brief                                                          (LLM writes)
-//   4 Make        Pick clips · Design edits · Render · Check                     (Jev judges, code assembles)
+//   4 Make        Pick clips · Hook cards · Music · Design edits · Render · Check (LLM writes, Jev judges, code assembles)
 //   5 Review      Review                                                         (you)
 //   6 Learn       Coach → the next Outline version                               (LLM writes, Jev picks, you apply)
 //
@@ -17,11 +17,15 @@
 // give the same result; changing one of its inputs is what makes it run.
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, parse } from "node:path";
-import { startBrief, startCheck, startCoach, startDesign, startPick, startRefStyle, startRender, startTranscript } from "./actions";
+import { startBrief, startCheck, startCoach, startDesign, startMusic, startPick, startRefStyle, startRender, startShots, startTitles, startTranscript } from "./actions";
 import { briefInputs, readBrief } from "./agents/brief";
 import { checkStatus, readCheck } from "./agents/check";
 import { coachInputs } from "./agents/coach";
 import { designInputs } from "./agents/design";
+import { readTitles } from "./agents/titles";
+import { listAssets } from "./effects/assets";
+import { LYRIA_PRICE, musicStatus, musicWanted } from "./effects/music";
+import { readEditStyle } from "./agents/edit";
 import { outlineState } from "./agents/outlines";
 import { pendingGuide, readReference } from "./agents/reference";
 import { renderStatus } from "./agents/render";
@@ -32,10 +36,11 @@ import { cancelJob, getJob, listJobs, startJob, waitForJob, type Job, type JobCo
 import { OUTLINE_FILE, listRuns, readSetting, readText, readTranscript, resolveVideo, runDir } from "./library";
 import { readReview } from "./review";
 
-export type NodeId = "source" | "outline" | "refclip" | "guide" | "transcript" | "refstyle" | "brief" | "pick" | "design" | "render" | "check" | "review" | "coach";
+export type NodeId = "source" | "outline" | "refclip" | "guide" | "transcript" | "shots" | "refstyle" | "brief" | "pick" | "titles" | "music" | "design" | "render" | "check" | "review" | "coach";
 export type NodeState = "empty" | "optional" | "locked" | "ready" | "stale" | "running" | "waiting" | "done" | "failed" | "stopped";
 export type Who = "you" | "transcriber" | "llm" | "jev" | "code";
-export type WfNode = { id: NodeId; phase: number; who: Who; state: NodeState; reason?: string; facts: [string, string][]; job?: string; cost?: number };
+/** canRun: an optional step you can still run by hand (Music, when the outline doesn't ask for it). */
+export type WfNode = { id: NodeId; phase: number; who: Who; state: NodeState; reason?: string; facts: [string, string][]; job?: string; cost?: number; canRun?: boolean };
 export type TakeRef = {
   id: string; created: string; current: boolean; reviewed: boolean; score: number | null; clips: number;
   /** The Pick settings it was made with, and whether its other inputs (brief, notes, transcript) are current:
@@ -81,8 +86,8 @@ function coachChange(video: string, direction?: string): { locked: boolean; chan
 
 export const LABEL: Record<NodeId, string> = {
   source: "Source video", outline: "Outline", refclip: "Reference clip", guide: "Copy guide",
-  transcript: "Transcript", refstyle: "Reference style", brief: "Brief",
-  pick: "Pick clips", design: "Design edits", render: "Render", check: "Check",
+  transcript: "Transcript", shots: "Shots", refstyle: "Reference style", brief: "Brief",
+  pick: "Pick clips", titles: "Hook cards", music: "Music", design: "Design edits", render: "Render", check: "Check",
   review: "Review", coach: "Coach",
 };
 
@@ -98,6 +103,9 @@ const readJson = (p: string): any => {
     return null;
   }
 };
+
+/** The current outline asks for a score per clip (for a take Run is about to make). */
+const takeStyleWants = (outline: string) => musicWanted(readEditStyle(outline));
 
 /** The latest job for a node, matching its video or take. */
 function jobFor(agent: Job["agent"], match: (j: Job) => boolean) {
@@ -148,10 +156,15 @@ export function workflowState(videoRef: string, takeId?: string | null, self?: s
 
   // ── 2 · Understand ────────────────────────────────────────────
   const aligned = segs?.length ? segs.filter((s) => s.timing === "aligned").length / segs.length : 0;
-  let trState: NodeState = !segs ? "ready" : !vt || aligned < 0.5 ? "stale" : "done";
+  const trState: NodeState = !segs ? "ready" : aligned < 0.5 ? "stale" : "done";
   N.transcript = withJob(node("transcript", 2, "transcriber", trState, segs ? [
-    ["Lines", String(segs.length)], ["Timing", aligned >= 0.5 ? `${pct(aligned)} measured` : "estimated"], ["Shots", vt ? String(vt.shots.length) : "not yet"],
-  ] : [], segs && trState === "stale" ? (!vt ? "No vision transcript yet" : "Word timings not measured yet") : undefined), jobFor("transcript", onVideo), segs ? Date.now() : 0);
+    ["Lines", String(segs.length)], ["Timing", aligned >= 0.5 ? `${pct(aligned)} measured` : "estimated"],
+  ] : [], segs && trState === "stale" ? "Word timings not measured yet" : undefined), jobFor("transcript", onVideo), segs ? Date.now() : 0);
+  const modes = (vt?.shots ?? []).reduce((m, sh) => ((m[sh.framing?.mode ?? "crop"] = (m[sh.framing?.mode ?? "crop"] ?? 0) + 1), m), {} as Record<string, number>);
+  N.shots = withJob(node("shots", 2, "transcriber", !vt ? "ready" : "done", vt ? [
+    ["Shots", String(vt.shots.length)], ["Labelled", `${vt.shots.filter((sh) => sh.kind).length}/${vt.shots.length}`],
+    ["9:16 framing", Object.entries(modes).map(([k, n]) => `${n} ${k}`).join(", ") || "–"],
+  ] : [], !vt ? "What's on screen, shot by shot: cuts, a frame per shot described, faces measured for the 9:16 crop" : undefined), jobFor("shots", onVideo), vt ? Date.now() : 0);
   const a = ref?.analysis;
   N.refstyle = withJob(node("refstyle", 2, "transcriber",
     !ref ? "optional" : !a ? "ready" : a.guide !== ref.guide ? "stale" : "done",
@@ -200,15 +213,42 @@ export function workflowState(videoRef: string, takeId?: string | null, self?: s
     !segs ? "Needs the transcript" : take && !take.current ? `${takeChange(readTakeInfo(take.id), bin.hash, pin)}: Run makes a new take` : undefined,
   ), jobFor("pick", onVideo), take ? readTakeInfo(take.id)?.created ?? Date.now() : 0);
 
+  const created = take ? readTakeInfo(take.id)?.created ?? 0 : 0;
+  const titles = take ? readTitles(take.id) : null;
+  const hooks = Object.values(titles?.clips ?? {});
+  N.titles = withJob(node("titles", 4, "jev", !take ? "locked" : !titles || titles.at < created ? "ready" : "done", titles ? [
+    ["Hook cards", String(hooks.filter((c) => c.hook).length)], ["Emphasis", `${hooks.reduce((n, c) => n + (c.emphasis?.filter((w) => w.kept).length ?? 0), 0)} words`],
+  ] : [], !take ? "Needs a take" : !titles ? "The LLM writes three hook cards per clip, Jev picks one; Jev keeps the words to stress in the captions" : undefined), jobFor("titles", onTake), titles?.at ?? 0);
+
+  // Music: a score made for each clip when the outline asks for it (Music source: generate). Otherwise it's
+  // optional: the clips use your own tracks, and you can still score a take by hand.
+  const ms = take ? musicStatus(take.id) : null;
+  const price = LYRIA_PRICE.pro;
+  const mDone = !!ms && ms.total > 0 && ms.missing.length === 0;
+  const about = ms ? `about $${(ms.missing.length * price).toFixed(2)}` : "";
+  // Your own tracks, when there are fewer than clips: every clip would play the same music.
+  const tracks = ms && !mDone && !ms.wanted && ms.on && !ms.named ? listAssets().filter((a) => a.kind === "music" && !a.builtin).length : 0;
+  const offReason = !ms ? "" : !ms.on ? `Off: the outline has no background music. ▶ Score clips makes one for each clip anyway, ${about}`
+    : ms.named ? `Off: the outline names the track every clip plays. ▶ Score clips makes one for each clip instead, ${about}`
+    : tracks < ms.total ? `The ${ms.total} clips would share ${tracks ? `${tracks === 1 ? "the one track" : `${tracks} tracks`} in assets/music` : "no music (assets/music is empty)"}. ▶ Score clips gives each its own, ${about}, or add Music source: generate to the outline`
+    : `Off: the clips use your tracks in assets/music. ▶ Score clips makes one for each clip anyway, ${about}`;
+  N.music = withJob({
+    ...node("music", 4, "jev", !take ? "locked" : mDone ? "done" : ms!.wanted ? "ready" : "optional", ms && (ms.scored.length || ms.wanted) ? [
+      ["Scores", `${ms.scored.length}/${ms.total} clips`], ["Made by", "Lyria 3"], ...(ms.cost ? [["Cost", `$${ms.cost.toFixed(2)}`] as [string, string]] : []),
+    ] : [], !take ? "Needs a take" : mDone ? undefined : ms!.wanted ? `${ms!.missing.length} clip${ms!.missing.length === 1 ? "" : "s"} to score, ${about}` : offReason),
+    ...(take && !mDone ? { canRun: true } : {}),
+  }, jobFor("music", onTake), ms?.file?.at ?? 0);
+
   let dState: NodeState = "locked";
   const design = tr ? readJson(join(runDir(tr.id), "design.json")) : null;
-  const created = take ? readTakeInfo(take.id)?.created ?? 0 : 0;
-  // Designed from the take, the planner's version, your effects/ and your assets/: a change to any is a redesign.
-  const din = designInputs();
-  const designReason = !design || design.at < created ? undefined
-    : !design.inputs || design.inputs.version < din.version ? "Designed before the effects library: Run plans it again with effects"
+  // Designed from the take, the planner's version, your effects/ and your assets/, and the clips' scores
+  // (a scored clip is planned without music): a change to any is a redesign.
+  const din = take ? designInputs(take.id) : null;
+  const designReason = !design || design.at < created || !din ? undefined
+    : !design.inputs || design.inputs.version < din.version ? "Designed with an older planner: Run plans it again"
     : design.inputs.effects !== din.effects ? "Your effects/ folder changed since"
-    : design.inputs.assets !== din.assets ? "Files in assets/ changed since" : undefined;
+    : design.inputs.assets !== din.assets ? "Files in assets/ changed since"
+    : (design.inputs.scores ?? din.scores) !== din.scores ? "The clips got their own music since" : undefined;
   if (take) dState = !design || design.at < created ? "ready" : designReason ? "stale" : "done";
   const planned = Object.values<any>(design?.clips ?? {}).filter((c) => c.mode === "concepts").length;
   const fxCount = tr ? tr.clips.reduce((n, c) => n + (c.edit?.fx?.length ?? 0), 0) : 0;
@@ -218,12 +258,10 @@ export function workflowState(videoRef: string, takeId?: string | null, self?: s
     for (const t of c.transitions ?? []) moves[t.transition] = (moves[t.transition] ?? 0) + 1;
   }
   const topMoves = Object.entries(moves).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, n]) => `${k.replace(/_/g, " ")} ×${n}`).join(", ");
-  N.design = withJob(node("design", 4, "jev", dState, design ? [
-    ...(planned
-      ? [["Plans", `${planned}/${tr?.clips.length ?? planned} clips, Jev picked`], ["Effects", String(fxCount)]] as [string, string][]
-      : [["Choices", String(Object.values<any>(design.clips ?? {}).reduce((n, c) => n + (c.zooms?.length ?? 0) + (c.transitions?.length ?? 0) + (c.hook ? 1 : 0), 0))], ["Moves", topMoves || "–"]] as [string, string][]),
-    ["Hook cards", String(Object.values<any>(design.clips ?? {}).filter((c) => c.hook).length)],
-  ] : [], !take ? "Needs a take" : designReason), jobFor("design", onTake), design?.at ?? 0);
+  N.design = withJob(node("design", 4, "jev", dState, design ? (planned
+    ? [["Plans", `${planned}/${tr?.clips.length ?? planned} clips, Jev picked`], ["Effects", String(fxCount)]] as [string, string][]
+    : [["Choices", String(Object.values<any>(design.clips ?? {}).reduce((n, c) => n + (c.zooms?.length ?? 0) + (c.transitions?.length ?? 0), 0))], ["Moves", topMoves || "–"]] as [string, string][])
+    : [], !take ? "Needs a take" : designReason), jobFor("design", onTake), design?.at ?? 0);
 
   const rs = take ? renderStatus(take.id) : null;
   N.render = withJob(node("render", 4, "code",
@@ -278,12 +316,18 @@ export function workflowState(videoRef: string, takeId?: string | null, self?: s
   const todo = (s: NodeState) => s !== "done" && s !== "running" && s !== "locked" && s !== "optional" && s !== "empty" && s !== "waiting";
   const plan: NodeId[] = [];
   if (N.transcript.state !== "done") plan.push("transcript");
+  if (N.shots.state !== "done") plan.push("shots");
   if (todo(N.refstyle.state)) plan.push("refstyle");
   if (N.brief.state !== "done" || plan.includes("refstyle")) plan.push("brief");
-  if (!take || N.pick.state === "stale" || plan.includes("brief")) plan.push("pick", "design", "render", "check");
+  // Music is part of Run only when the outline asks for scores; a new take gets them if it does.
+  const scoring = take ? ms!.wanted : takeStyleWants(outline);
+  if (!take || N.pick.state === "stale" || plan.includes("brief")) plan.push("pick", "titles", ...(scoring ? ["music" as const] : []), "design", "render", "check");
   else {
-    if (N.design.state !== "done") plan.push("design");
-    if (plan.includes("design") || N.render.state !== "done") plan.push("render");
+    if (N.titles.state !== "done") plan.push("titles");
+    if (scoring && N.music.state !== "done") plan.push("music");
+    if (N.design.state !== "done" || plan.includes("music")) plan.push("design");
+    // New hook cards change what's on screen (the card and the stressed words), so the clips render again.
+    if (plan.includes("design") || plan.includes("titles") || N.render.state !== "done") plan.push("render");
     if (plan.includes("render") || N.check.state !== "done") plan.push("check");
   }
   if (!plan.length && N.review.state === "done" && N.coach.state === "ready") plan.push("coach");
@@ -352,9 +396,12 @@ async function follow(job: Job, ctx: JobContext) {
 function startStep(step: NodeId, video: string, take: string | null): Job {
   switch (step) {
     case "transcript": return startTranscript(video);
+    case "shots": return startShots(video);
     case "refstyle": return startRefStyle();
     case "brief": return startBrief(video);
     case "pick": return startPick({ video });
+    case "titles": return startTitles(take!);
+    case "music": return startMusic({ run: take! });
     case "design": return startDesign(take!);
     case "render": return startRender({ run: take! });
     case "check": return startCheck({ run: take! });

@@ -5,6 +5,7 @@
 //   runtime/    workerd (the Director's runtime), ffmpeg, yt-dlp, faces/ (face detection)
 //   models/     the face detection model
 //   templates/  the starter clip outline
+//   sounds/     the built-in library of recorded sound effects (CC0)
 // App state goes to the user's app data folder (%LOCALAPPDATA%\mrClipper on Windows) and the workspace
 // (videos, transcripts, clips, outline) defaults to Documents\mrClipper. Nothing needs to be installed
 // or configured first; the OpenRouter key is asked for in the app.

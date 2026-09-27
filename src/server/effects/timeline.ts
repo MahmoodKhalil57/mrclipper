@@ -138,12 +138,45 @@ export function spanOf(use: FxUse, def: EffectDef, map: TimelineMap): [number, n
   return b - a >= 0.04 ? [a, b] : null;
 }
 
+// ── sounds that used to be synthesized ────────────────────────────────
+
+/** Sounds the library used to synthesize, and the recorded sound each became. Edits made with them still
+ *  play (the recorded one), and a planner that names one gets the recorded one too. */
+const RECORDED: Record<string, { file: string; bed?: boolean }> = {
+  whoosh: { file: "whoosh_fast" }, swoosh: { file: "swoosh" }, reverse_whoosh: { file: "reverse_cymbal" }, impact: { file: "impact" },
+  boom: { file: "boom" }, bass_hit: { file: "bass_drop" }, riser: { file: "riser" }, pop: { file: "pop" }, click: { file: "click" },
+  shutter: { file: "camera_shutter" }, ding: { file: "ding" }, sparkle: { file: "sparkle" }, glitch_noise: { file: "glitch" },
+  heartbeat: { file: "heartbeat" }, typing: { file: "typing", bed: true },
+};
+/** No stand-in: the drone was a pad (music does that now), and the crackle beds were the static heard under
+ *  whole clips, so edits made with them don't get recorded crackle instead. */
+const DROPPED = new Set(["sad_drone", "vinyl", "crackle", "record_crackle"]);
+
+/** A use of a sound that's no longer synthesized, as the recorded sound it became: a range of a bed loops
+ *  quietly (ambience), anything else plays once (sfx). Null for sounds that have no recorded stand-in. */
+export function upgradeUse<T extends { fx?: unknown }>(u: T): T | null {
+  const name = String(u?.fx ?? "").trim().toLowerCase();
+  if (DROPPED.has(name)) return null;
+  const r = RECORDED[name];
+  if (!r) return u;
+  const x = u as any;
+  const range = x.from !== undefined && x.to !== undefined;
+  const fx = r.bed && range ? "ambience" : "sfx";
+  const params = { ...(x.params ?? {}), file: r.file };
+  return { ...x, fx, params, ...(fx === "sfx" && x.at === undefined ? { at: x.from } : {}), ...(fx === "sfx" ? { from: undefined, to: undefined } : {}) };
+}
+
 // ── checking what a planner wrote ──────────────────────────────────────
 
 const RESERVED = new Set(["fx", "at", "from", "to", "duration", "params", "why"]);
 
 /** One effect use from a planner or a person → a clean use (known effect, valid params and anchors), or why not. */
 export function checkUse(raw: any, kinds: EffectDef["kind"][], cat: Catalog, assets: Asset[], map: TimelineMap | null): { use?: FxUse; def?: EffectDef; note?: string } {
+  if (raw && typeof raw === "object" && kinds.includes("sound")) {
+    const was = String(raw.fx ?? raw.effect ?? raw.name ?? "");
+    raw = upgradeUse({ ...raw, fx: raw.fx ?? raw.effect ?? raw.name });
+    if (!raw) return { note: `${was} was a synthesized sound with no recorded stand-in, so it was left out` };
+  }
   let name = typeof raw === "string" ? raw : raw?.fx ?? raw?.effect ?? raw?.name;
   let def = findEffect(cat, name, kinds);
   // One of your files named as if it were an effect ("soft_whoosh"): play or show that file.
@@ -209,10 +242,11 @@ export type TimelineView = {
 export function timelineView(e: Edit, style: Pick<EditStyle, "transitionLength">, cat: Catalog): TimelineView {
   const map = layout(e, style, cat);
   const fx: TimelineView["fx"] = [];
-  for (const u of e.fx ?? []) {
-    const def = findEffect(cat, u.fx, TIMELINE_KINDS);
-    const span = def ? spanOf(u, def, map) : null;
-    if (!def || !span) continue;
+  for (const u0 of e.fx ?? []) {
+    const u = upgradeUse(u0);
+    const def = u ? findEffect(cat, u.fx, TIMELINE_KINDS) : undefined;
+    const span = u && def ? spanOf(u, def, map) : null;
+    if (!u || !def || !span) continue;
     const p = u.params ?? {};
     const label = typeof p.text === "string" ? p.text : typeof p.file === "string" ? p.file : typeof p.style === "string" ? p.style : undefined;
     fx.push({ fx: def.name, kind: def.kind, t0: +span[0].toFixed(2), t1: +span[1].toFixed(2), ...(label ? { label } : {}) });
@@ -233,7 +267,9 @@ const paramsText = (p?: Record<string, unknown>) => (p && Object.keys(p).length 
 /** The timeline effects as short lines ("0:04.2 zoom_punch", "0:10.0-0:14.5 riser"), in time order. */
 export function describeTimeline(e: Edit, map: TimelineMap, cat: Catalog): string[] {
   return (e.fx ?? [])
-    .map((u) => {
+    .map((u0) => {
+      const u = upgradeUse(u0);
+      if (!u) return null;
       const def = findEffect(cat, u.fx, TIMELINE_KINDS);
       const span = def ? spanOf(u, def, map) : null;
       return span ? { t: span[0], line: `${def!.timing === "instant" ? mmss(span[0]) : `${mmss(span[0])}-${mmss(span[1])}`} ${u.fx}${paramsText(u.params)}` } : null;

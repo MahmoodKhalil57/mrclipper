@@ -69,14 +69,14 @@ export function AddVideo({ onAdded, importJob, hero }: {
           <>
             <div className="drop-icon">⤓</div>
             <div><b>Drop a video here</b> or click to choose one</div>
-            <div className="faint">mp4 · mkv · webm · mov. Saved to downloads/</div>
+            <div className="faint">mp4 · mkv · webm · mov. Saved to videos/</div>
           </>
         )}
       </button>
       <input ref={input} type="file" accept="video/*,.mkv" hidden onChange={(e) => e.target.files?.[0] && send(e.target.files[0])} />
       <div className="or"><span>or paste a link</span></div>
       <div className="row">
-        <input className="field grow" placeholder="https://www.youtube.com/watch?v=…" value={url} onChange={(e) => setUrl(e.target.value)}
+        <input className="field grow" placeholder="Paste a link: YouTube, TikTok, Instagram, X, Vimeo…" value={url} onChange={(e) => setUrl(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && url.trim() && importLink()} />
         <button className="btn primary" disabled={!url.trim() || !!importing} onClick={importLink}>Import</button>
       </div>

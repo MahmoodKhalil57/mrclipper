@@ -17,6 +17,7 @@ export default {
       "vendor/runtime": "runtime",
       "vendor/models": "models",
       templates: "templates",
+      sounds: "sounds",
     },
     win: { bundleCEF: false },
     mac: { bundleCEF: false },

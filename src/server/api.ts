@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import { startBrief, startCheck, startCoach, startDesign, startPick, startRefImport, startRefStyle, startRender, startSourceImport, startTranscript } from "./actions";
+import { startBrief, startCheck, startCoach, startDesign, startMusic, startPick, startRefImport, startRefStyle, startRender, startShots, startSourceImport, startTitles, startTranscript } from "./actions";
 import { readBrief } from "./agents/brief";
 import { applyProposal, discardProposal, restoreVersion, versionText } from "./agents/outlines";
 import { addReferenceFile, clearReference, pendingGuide, readReference, setGuide } from "./agents/reference";
@@ -42,6 +42,9 @@ function startStep(b: Record<string, any>): Job | { skipped: string } {
   };
   switch (step) {
     case "transcript": return startTranscript(String(b.video));
+    case "shots": return startShots(String(b.video));
+    case "titles": return startTitles(take());
+    case "music": return startMusic({ run: take(), only: b.only });
     case "refstyle": return startRefStyle();
     case "brief": return startBrief(String(b.video));
     case "pick": return startPick({ video: String(b.video) });
@@ -150,7 +153,10 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
       return json({
         effects: cat.effects.map(({ name, kind, timing, description, tags, params, duration, origin }) => ({ name, kind, timing, description, tags, params, duration, origin })),
         notes: cat.notes,
-        assets: assets.map((a) => ({ kind: a.kind, name: a.name, file: rel(a.file), size: a.size, duration: a.duration })),
+        assets: assets.map((a) => ({
+          kind: a.kind, name: a.name, size: a.size, duration: a.duration,
+          ...(a.builtin ? { builtin: true, description: a.description, url: `/sounds/${a.name}.mp3` } : { url: `/files/${rel(a.file).split("/").map(encodeURIComponent).join("/")}` }),
+        })),
         folders: ASSET_FOLDERS, assetsDir: rel(ASSETS_DIR), effectsDir: rel(EFFECTS_DIR),
       });
     }

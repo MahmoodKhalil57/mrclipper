@@ -165,6 +165,9 @@ export function listRuns() {
         check: readJsonFile(join(dir, "check.json")),
         info: readJsonFile(join(dir, "take.json")),
         design: readJsonFile(join(dir, "design.json")),
+        // Hook cards (titles.json) and the clips' scores (music.json), from their own steps.
+        titles: readJsonFile(join(dir, "titles.json")),
+        music: readJsonFile(join(dir, "music.json")),
         clips: (data?.clips ?? []).map((c) => {
           const file = join(dir, `clip_${String(c.id).padStart(2, "0")}.mp4`);
           const has = existsSync(file);

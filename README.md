@@ -53,15 +53,18 @@ Paths in the last column are inside the workspace.
 
 | Phase | Step | Who | What it makes | Saved in |
 |---|---|---|---|---|
-| **1 Inputs** | Source video | you | the long video | `videos/` |
+| **1 Inputs** | Source video | you | the long video: a file, or a link yt-dlp downloads | `videos/` |
 | | Outline | you | who the clips are for and how to cut them | `clip_outline.md` |
 | | Reference clip | you, optional | a finished short whose style to copy | `references/<id>/` |
 | | Copy guide | you, optional | what to copy from it, in your words | `references/<id>/reference.json` |
-| **2 Understand** | Transcript | Transcriber | what's said, with measured word timings, and what's on screen, shot by shot | `transcripts/<video>/` |
+| **2 Understand** | Transcript | Transcriber | what's said, with measured word timings | `transcripts/<video>/` |
+| | Shots | Transcriber | what's on screen, shot by shot: the cuts, a frame per shot described, faces measured for the 9:16 crop | `transcripts/<video>/` |
 | | Reference style | Transcriber | the reference measured and described, focused on the copy guide | `references/<id>/reference.json` |
 | **3 Brief** | Brief | LLM writes | Jev's questions for picking clips, edit and hook-card guidance, and the rules every finished clip is checked on | `transcripts/<video>/brief.json` |
 | **4 Make** | Pick clips | Jev judges | a new **take**: the best clips that don't overlap | `clips/<take>/clip_script.md`, `take.json`, `jev.json` |
-| | Design edits | LLM writes, Jev judges | an edit per clip from the effects library and your files (two plans, Jev picks one), the hook card and emphasis words | `clips/<take>/design.json` |
+| | Hook cards | LLM writes, Jev judges | three hook cards per clip, Jev picks one, and the words the captions stress | `clips/<take>/titles.json` |
+| | Music | LLM writes, Jev judges, Lyria makes | a score made for each clip; optional | `clips/<take>/music/`, `music.json` |
+| | Design edits | LLM writes, Jev judges | an edit per clip from the effects library and your files (two plans, Jev picks one) | `clips/<take>/design.json` |
 | | Render | code | the finished 9:16 clips | `clips/<take>/*.mp4`, `render.json` |
 | | Check | Transcriber + Jev | each clip heard and watched, then rated on the brief's rules and its in and out points | `clips/<take>/check.json`, `watch/` |
 | **5 Review** | Review | you | keep or drop each clip, nudges, comments | `clips/<take>/review.json` |
@@ -69,9 +72,11 @@ Paths in the last column are inside the workspace.
 
 The Coach's output wires back into the Outline, which closes the loop: the next take is made from the version you applied.
 
+Every step is its own node on the canvas, so you can watch a run move through them. In Make, the take's own steps (Pick clips, Hook cards, Music) run down one column, and the edit's (Design edits, Render, Check) down the next.
+
 ## Making clips
 
-1. **Add a video.** Drop a file on the window, click **+ Add video**, or paste a YouTube link. Each video is a project; switch between them from the thumbnail menu in the top bar.
+1. **Add a video.** Drop a file on the window, or paste a link in **+ Add video** (top bar) or on the Source video node. Links download with yt-dlp, so YouTube, TikTok, Instagram, X, Vimeo and most video sites work. Each video is a project; switch between them from the thumbnail menu in the top bar.
 2. **Check the outline.** A new workspace starts from a template. Its bold settings are rules: clip count and length, the transitions, camera moves and effects allowed, music, captions, the colour grade. Its prose steers the edit.
    Put any sound effects, music, GIFs and stickers you want used in the workspace's `assets/` folder.
 3. **Optionally add a style reference.** On the Reference clip node, upload a short (or paste a TikTok, Reels or Shorts link) and say what to copy from it: "the fast cuts and the two-word captions".
@@ -94,7 +99,7 @@ Every node is in one of these states, computed the same way for all of them from
 
 | State | Meaning |
 |---|---|
-| add it · optional | an input you haven't given (the reference and copy guide are optional) |
+| add it · optional | an input you haven't given (the reference and copy guide are optional), or a step the outline doesn't ask for (Music) that you can still run |
 | waiting | needs an earlier step first |
 | ready | can run now |
 | running | working; ■ Stop is on the node |
@@ -104,11 +109,14 @@ Every node is in one of these states, computed the same way for all of them from
 | failed · stopped | the last run of it failed or you stopped it |
 
 What makes each step out of date:
-- **Transcript:** it has no vision transcript, or its word timings weren't measured.
+- **Transcript:** its word timings weren't measured.
+- **Shots:** done once it has run; it only depends on the video.
 - **Reference style:** the copy guide changed.
 - **Brief:** the outline or the style reference changed, or an update to mrClipper changed how briefs are written. It's cached per video, so re-running costs no LLM call until one of those happens.
 - **Pick clips:** the take was made from an older brief, or Pick's settings (a direction and a clip count, in its panel) changed, or your transcript notes did, or the transcript did. A take never changes its inputs, so ▶ Run makes a new take, unless an earlier take was made from exactly the current inputs: then that take is shown again and nothing runs. Takes made before this version of the workflow show as out of date.
-- **Design edits:** your `effects/` or `assets/` changed since it ran, or it was designed before the effects library.
+- **Hook cards:** the take is newer than its hook cards.
+- **Music:** a kept clip has no score, or its score was made from other music notes (the outline's Music section or the style reference's audio). Only those clips are scored again.
+- **Design edits:** your `effects/` or `assets/` changed since it ran, a clip got its own score since, it was designed by an older planner, or before the effects library.
 - **Render:** a clip's edit changed (for example, you nudged an edge), or an effect or file it uses changed. Only that clip is rendered again.
 - **Check:** a clip was rendered again since it was checked.
 - **Any step after one that runs again:** for example, Check after Render, or Design, Render and Check when Run makes a new take.
@@ -138,15 +146,27 @@ On the 10-minute test video that was 493 decisions in 10 s for $0.016.
 
 Pick's inputs are the brief, the transcript, your notes pinned to transcript lines, and its own settings: a direction for Jev and a clip count, saved per video in its panel. Change a setting and the panel offers **▶ Make a new take** (Run: Pick, Design, Render, Check), **Pick only**, or **Save** for a later Run. If an earlier take was picked with exactly those settings and the same other inputs, it offers **↩ Back to take N** instead, which brings that take back without running anything.
 
+### Hook cards (LLM writes, Jev judges)
+
+One LLM call writes three hook cards per clip, in the clip's own language and dialect, and the words that could carry its feeling. Jev picks the hook card most likely to stop a scroller, and keeps up to three of the words for the captions to stress. The hook card shows for the outline's `Title duration` at its `Title position`.
+
+### Music (LLM writes, Jev judges, Lyria makes)
+
+Each clip can get a score made for it, so no two clips share a track. The step runs by itself when the outline asks (`Background music: yes` and `Music source: generate`). Otherwise the node is optional, and **▶ Score clips** on it scores the take anyway. For every kept clip:
+1. **The LLM writes three prompts.** It reads the clip: what's said and when, and how long it runs. It also reads the outline's music notes, the brief and the style reference's audio. Each prompt follows the clip's shape: sparse under talk, a swell on the laugh or the reveal, and an ending where the clip ends.
+2. **Jev picks one.**
+3. **Lyria 3 makes it.** Pro costs $0.08 a clip, and `generate clip` uses the 30-second model for $0.04. Lyria sometimes answers with no audio, which isn't charged; then Jev's runner-up prompt is tried.
+
+Scores are saved with the take in `clips/<take>/music/`, and `music.json` records what each one was made from. Each clip is scored once: redesigning or re-rendering reuses its score, and changing the music notes scores it again. The panel plays each score with its prompts and Jev's odds. A score replaces any music a plan would add, and plays under the whole clip, ducked under speech and fitted to its length (see Render). A three-clip take costs about $0.24.
+
 ### Design edits (LLM writes, code checks, Jev judges)
 
 Design edits each clip like a professional editor would, from the effects library (below) and your files in `assets/`. For every clip:
-1. **The LLM plans two edits.** It reads the outline, the brief, the style reference, the clip's words (numbered, with times) and what's on screen, and writes two genuinely different plans. Each plan covers a camera move, looks, speed, freeze frames or reversing for each part, a transition for each join, and effects on the timeline: text, graphics, your GIFs and stickers, generated or file sounds, treatments of the clip's own voice, music, and video effects over a time range. Hits land on words: "a zoom punch and an impact at word 23".
+1. **The LLM plans two edits.** It reads the outline, the brief, the style reference, the clip's words (numbered, with times) and what's on screen, and writes two genuinely different plans. Each plan covers a camera move, looks, speed, freeze frames or reversing for each part, a transition for each join, and effects on the timeline: text, graphics, your GIFs and stickers, recorded or file sounds, treatments of the clip's own voice, music, and video effects over a time range. Hits land on words: "a zoom punch and an impact at word 23". A clip with its own score (the Music step) is planned without music.
 2. **Code checks each plan.** It keeps only what the outline allows (below), what exists (effects, your files) and what lands on a real moment of the clip. It caps the amount at the outline's effect intensity and keeps the clip under its maximum length. Then it test-runs each plan in ffmpeg. An effect that doesn't render is found and dropped. Every change is noted.
 3. **Jev picks the plan** a professional short-form editor would choose for this clip, given the brief, the outline's rules and the style reference.
-4. **The hook card and emphasis words:** one LLM call writes three hook-card options per clip in the clip's language, and Jev picks the one most likely to stop a scroller. The LLM also proposes up to five words from the clip, and Jev keeps up to three that carry its feeling.
 
-The panel shows both plans with Jev's odds, what each one does, the checks' notes, and the chosen edit as a timeline, with lanes for picture, text and sound. If the LLM can't plan a clip, Jev picks a camera move per part and a transition per join instead, as before.
+The panel shows both plans with Jev's odds, what each one does, the checks' notes, and the chosen edit as a timeline, with lanes for picture, text and sound. An answer that can't be read is asked for again once. If the LLM still can't plan a clip, Jev picks a camera move per part and a transition per join instead, and the clip keeps nothing from an earlier design.
 
 **What the outline controls.** Its bold settings are rules the plans must follow, so an outline can ask for a quiet, sad edit or a dense anime one:
 
@@ -159,8 +179,10 @@ The panel shows both plans with Jev's odds, what each one does, the checks' note
 | **Sound effects:** | the sounds allowed; leave it out for all of them | `whoosh, impact, heartbeat` or `no` |
 | **Background music:** | music under the clip, from `assets/music` | `yes`, or a file: `` `sad_piano.mp3` `` |
 | **Music mood:** / **Music volume:** | which track fits, and how loud | `slow solo piano` / `low` |
+| **Music source:** | your tracks, or a score Lyria makes for each clip (the Music step; needs `Background music: yes`) | `my files` (the default), `generate`, `generate clip` |
 | **Effect intensity:** | how much the planner does | `subtle`, `moderate` or `heavy` |
 | **Loudness:** | the level every clip is mastered to | `-14 LUFS` (the default) or `off` |
+| **Voice cleanup:** | a high-pass and a gentle denoise on the clip's own voice | `light` (the default), `strong` or `off` |
 
 The outline's prose steers the plans too ("slow motion on the quiet beat after the laugh"). The house style is applied to every clip anyway: the colour grade, vignette, grain, glow, bars, fades, captions and the hook card.
 
@@ -170,7 +192,11 @@ ffmpeg renders each clip's edit in one run. The edit is more than a single range
 - **parts:** source ranges in play order, so a cold open can put the payoff first. Each part has its camera move and looks, a speed from 0.25× (slow motion) to 4×, an optional freeze frame at its end, and can play reversed (up to 3 s).
 - **joins:** a cut, any of ffmpeg's 58 transitions, or an editor's transition, such as a flash cut, an impact cut (a flash plus a zoom punch), a glitch cut, a blur into a memory, or one of your GIFs played over the cut.
 - **timeline effects**, each over its own time range: text, graphics, your overlays, sounds, voice treatments, music and video effects. A video effect's stretch is cut out, processed and spliced back, so an effect costs only its own frames.
-- **sound:** the voice with its treatments, generated sounds and your sound files, and music ducked under speech, mixed and mastered to the outline's loudness (−14 LUFS unless it says otherwise, peaks under −1.5 dBTP).
+- **sound:** mixed against known levels, so nothing has to be pushed up afterwards:
+  - **the voice** is cleaned (a high-pass at 70 Hz and a gentle denoise, set by `Voice cleanup`), then measured and brought to dialogue level, −18 LUFS, with its treatments on top.
+  - **sounds** are the recorded library and your files.
+  - **music** is ducked under speech. Every track is brought to the same level first (−16 LUFS, measured once per file), so a volume means the same for a loud master and a quiet one. A clip's own score is fitted to the clip like a music editor would: Lyria takes lengths loosely, so its opening and its composed ending are kept, and the difference comes out of the middle in one crossfade where someone is talking, which the ducking hides. When the clip is longer than its score, a middle stretch plays twice instead.
+  - **mastering:** a limiter guards the peaks, then the finished clip is measured and one gain brings it to the outline's loudness (−14 LUFS unless it says otherwise, peaks under −2 dB). One gain for the whole clip means pauses aren't lifted, so room hiss doesn't swell between lines.
 - **whole-clip finishing, set in the outline:** a colour grade (`subtle`, `punchy`, `warm`, `cinematic` or `nostalgic`), vignette, film grain, glow, letterbox bars, and a fade in and out.
 - **captions, the hook card and text effects:** one ASS file rendered by libass, so Arabic shaping works. Captions follow the measured word timings: `karaoke` lights each word as it's spoken, `pop` pops each word in as it's said, `box` puts karaoke on a box, and `plain` shows whole lines. Emphasis words get their own colour. Fonts in `assets/fonts` can be named as the caption font.
 
@@ -202,9 +228,13 @@ About 160 effects, in nine kinds. **Browse the effects** in the Design panel lis
 | graphics | a time range | `flash`, `dip`, `border_glow`, `neon_border`, `speed_lines`, `light_leak`, `progress_bar` |
 | text and shapes | a time range | `big_text`, `type_on`, `banner`, `lower_third`, `callout`, `arrow`, `circle`, `highlight_box` |
 | your files | a time range | `overlay`: a GIF, a WebM or MOV with transparency, a PNG, or a green-screen clip, keyed |
-| sounds | a moment or a range | `whoosh`, `impact`, `boom`, `riser`, `pop`, `ding`, `heartbeat`, `sparkle`, `typing`, `sad_drone`, `vinyl`, or `sfx` with your file |
+| sounds | a moment or a range | `sfx` plays a recorded sound (below) or your file on a moment; `ambience` loops one quietly under a range |
 | the clip's own audio | a time range | `reverb`, `echo`, `muffled`, `telephone`, `pitch`, `bass_boost`, `robot`, `mute`, `reverse_audio` |
 | music | a time range | `music`: a track from `assets/music`, ducked under speech |
+
+**Recorded sounds.** mrClipper ships 42 recorded sound effects in `sounds/`, all CC0 (public domain) from Freesound, with credits in `sounds/CREDITS.md`. They include whooshes, swooshes, a riser, a reversed cymbal, impacts, a punch, a boom, a bass drop, heartbeats, a camera shutter, a ding, a chime, pops, clicks, typing, a record scratch, a glitch, laughter, applause, a gasp, an "aww", a cash register, a sparkle, a rewind, a ticking clock, a sword swing, thunder, a drum roll, a sad trombone, a boing, crickets, a slide whistle, a ta-da, a wrong-answer buzzer, vinyl crackle, room tone and a sad piano phrase. The planner reads what each one is for. Each starts on its first sound, so a hit lands exactly where an edit puts it. `bun scripts/sounds.ts` rebuilds the library from its pinned list of Freesound sounds, checking each is still CC0.
+
+Vinyl crackle and room tone are offered to the planner only when the outline asks for them by name ("vinyl crackle under the memories"; "no crackle" doesn't count): on a phone, a noise bed under speech sounds like static. The library used to synthesize its sounds. Edits made with those play the recorded ones instead, except the drone and the crackle beds, which are left out.
 
 **Your files** go in the workspace's `assets/` folder: `sfx/`, `music/`, `overlays/`, `images/`, `luts/` and `fonts/`. Use **Open assets folder** or **＋ Add files** in the Design panel. Name them for what they are ("whoosh_long", "sad_piano_slow"), because the planner reads the names. Adding or replacing a file puts Design out of date, so the next Run plans with it.
 
@@ -256,16 +286,16 @@ Every take saves the outline it was made from (`clips/<take>/outline.md`), and e
 
 The Reference style step measures the reference clip: cut rhythm, speech rate, pauses and faces. A multimodal model (`google/gemini-2.5-flash`) then watches and listens to it with your copy guide in mind. The result is a style profile and a list of checkable traits, such as "cuts every 1-2 s" or "two-word captions in the centre". The Brief turns the traits into check rules, and the Coach uses them to rewrite the outline toward the reference. One analysis costs about $0.005.
 
-### Transcript timing and the vision transcript
+### Transcript timing and Shots
 
 Gemini writes the transcript text because it's the most faithful to the dialect, but its timestamps are guesses. So a second pass with `openai/whisper-large-v3` (about $0.02 for a 36-minute video) measures when each word is spoken, and Gemini's words are aligned onto Whisper's. Only Whisper's timings are kept. Lines longer than 9 s are split at punctuation or the longest pause.
 
-The vision transcript records what's on screen:
+The Shots step writes the vision transcript, which records what's on screen:
 - **Shots:** ffmpeg finds the cuts.
 - **Labels:** a frame from each shot goes to `google/gemini-2.5-flash-lite`. It labels the kind of shot (close-up, footage, archive photo, graphic and so on), what's in it, any on-screen text, and the number and position of people. That's about $0.035 for a 36-minute episode.
 - **Overlays:** text on more than 20% of shots, such as a logo, is treated as an overlay and listed once.
 
-Both go in `transcripts/<video>/`. The Transcript panel lets you search, play any line, and pin notes for Pick.
+Both go in `transcripts/<video>/`. The Transcript panel lets you search, play any line, and pin notes for Pick; the Shots panel lists the shots.
 
 ## The Director
 
@@ -321,6 +351,7 @@ bun run build          # the Director bundle, the UI and the server, into dist/
 bun start              # serve the last build
 bun run typecheck
 bun scripts/effects-test.ts   # render every effect on a test clip
+bun scripts/sounds.ts         # rebuild the built-in sound library from Freesound (CC0)
 bun run desktop        # the desktop app window, from this checkout (Electrobun dev build)
 bun run desktop:build  # the standalone Windows installer, into artifacts/
 ```
@@ -340,7 +371,7 @@ Only the two desktop commands need [Hutch](https://hutch.blackboard.sh). On Wind
 | `runtime/ffmpeg.exe` | the gyan.dev essentials build (libass, fribidi and harfbuzz for Arabic captions, x264); durations come from `ffmpeg -i`, so there's no ffprobe |
 | `runtime/yt-dlp.exe` | link imports |
 | `runtime/faces/` | `tools/faces.py` compiled with PyInstaller (OpenCV YuNet) |
-| `models/`, `templates/` | the face model and the starter outline |
+| `models/`, `templates/`, `sounds/` | the face model, the starter outline, and the recorded sound library |
 
 Where things live when installed:
 - **App state** is in `%LOCALAPPDATA%\mrClipper`: settings, thumbnails, the Director's storage, and the workspace choice.

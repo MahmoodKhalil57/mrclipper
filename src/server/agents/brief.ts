@@ -14,7 +14,7 @@ import { basename, join } from "node:path";
 import { MODELS, WRITER } from "../config";
 import type { JobContext } from "../jobs";
 import { extractJson, openrouter } from "../lib";
-import { OUTLINE_FILE, readText, readTranscript, transcriptDir } from "../library";
+import { OUTLINE_FILE, readText, readTranscript, runDir, transcriptDir } from "../library";
 import { readEditStyle, type EditStyle, type Transition, type Zoom } from "./edit";
 import { readReference, referenceText, type Reference } from "./reference";
 import { audienceSummary, clipStr, hashText, sectionsOf } from "./text";
@@ -74,6 +74,14 @@ export function readBrief(video: string): BriefFile | null {
   } catch {
     return null;
   }
+}
+
+/** The brief a take was made with (snapshotted in jev.json), else the video's current one. */
+export function takeBrief(runId: string, video: string): Brief {
+  const f = join(runDir(runId), "jev.json");
+  const snap = existsSync(f) ? JSON.parse(readFileSync(f, "utf8")).brief : null;
+  if (snap?.pick) return snap as Brief;
+  return readBrief(video)?.brief ?? defaultBrief(readText(OUTLINE_FILE));
 }
 
 // ── the built-in brief ───────────────────────────────────────────────

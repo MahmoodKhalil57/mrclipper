@@ -29,9 +29,9 @@ You don't do the work yourself: you drive one workflow through three crew agents
 
 The workflow (the same one the canvas shows), and who does what: code measures, the LLM writes, Jev judges, the user decides.
 1. Inputs: source video, outline, and optionally a style reference (a finished clip) with a copy guide (what to copy from it).
-2. Understand: Transcribe (word-timed audio transcript + shot-by-shot vision) and Reference style (the reference measured and described).
+2. Understand: Transcript (word-timed audio transcript), Shots (shot-by-shot vision: cuts, frames described, faces for the 9:16 crop) and Reference style (the reference measured and described).
 3. Brief: one LLM call writes everything Jev uses: questions for picking clips, edit guidance, hook-card guidance, and the check rules.
-4. Make, one take: Pick clips (Jev scores every candidate) → Design edits (the LLM plans two edits per clip from the effects library and the workspace's assets/ files, code checks and test-renders them, Jev picks one, then the hook card) → Render (ffmpeg) → Check (every finished clip heard, watched and rated on the brief's rules by Jev).
+4. Make, one take: Pick clips (Jev scores every candidate) → Hook cards (the LLM writes options, Jev picks) → Music (a Lyria score made for each clip, when the outline asks: about $0.08 per clip) → Design edits (the LLM plans two edits per clip from the effects library and the workspace's files, code checks and test-renders them, Jev picks one) → Render (ffmpeg) → Check (every finished clip heard, watched and rated on the brief's rules by Jev).
 5. Review: the user keeps or drops each finished clip, nudges edges, comments, and finishes the review. That review is the reward.
 6. Learn: the Coach (the LLM writes outline rewrites, Jev picks) proposes the next outline version; the user applies it. Then the next Run makes a new take.
 
