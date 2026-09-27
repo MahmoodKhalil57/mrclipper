@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
-import { actions, thumbUrl, useStudio, useWorkflow, type NodeId, type NodeState, type StepArgs, type Video, type Workflow } from "./api";
+import { actions, thumbUrl, useStudio, useWorkflow, type NodeId, type NodeState, type Started, type StepArgs, type Video, type Workflow } from "./api";
 import { AddVideo } from "./AddVideo";
 import { WorkflowCanvas, NODE_TITLE, PHASES, type CanvasHandlers } from "./Canvas";
 import { Console } from "./Chat";
@@ -100,11 +100,18 @@ export function App() {
     }
   };
   const stop = (id: string) => guard(() => actions.cancel(id), "Stopping…");
+  /** Start a step or a run. When nothing ran because it's up to date with its inputs, say why. */
+  const started = (start: () => Promise<Started>, okMsg?: string) =>
+    guard(async () => {
+      const r = await start();
+      if (r.skipped) toast(r.skipped);
+      else if (okMsg) toast(okMsg);
+    });
   const step = (id: NodeId, args: StepArgs = {}) => {
     if (!video) return;
-    guard(() => actions.step(id, { video: video.name, take: wf?.take?.id, ...args }));
+    started(() => actions.step(id, { video: video.name, take: wf?.take?.id, ...args }));
   };
-  const runAll = () => video && guard(() => actions.run(video.name, takeId), "Running the workflow");
+  const runAll = () => video && started(() => actions.run(video.name, takeId), "Running the workflow");
   const ask = (text: string) => {
     setDraft(text);
     setDock(true);

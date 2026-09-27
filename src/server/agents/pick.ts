@@ -2,7 +2,7 @@
 // candidates, Jev answers the brief's typed questions about each, code ranks and picks.
 //   A. openers   every line:          the brief's opener questions
 //   B. endings   every line:          the brief's ending questions
-//   C. windows   best openers x ends: the brief's clip questions, tone, your direction, your feedback, visuals
+//   C. windows   best openers x ends: the brief's clip questions, tone, your direction and notes, visuals
 //   D. select    by score, safety gates, no overlaps, spread across tones, moments from earlier takes scored down
 // The result is a new take; Design, Render and Check work on it next.
 import { parse } from "node:path";
@@ -10,11 +10,11 @@ import type { JobContext } from "../jobs";
 import { decide, level, noul, pick, type Question } from "../jev";
 import { listRuns } from "../library";
 import { fmt, pool } from "../lib";
-import { feedbackDigest } from "../review";
+import { notesDigest } from "../review";
 import { currentBrief, referenceFingerprint, type BriefQuestion } from "./brief";
 import { autoEdit, readEditStyle } from "./edit";
 import { hashText } from "./text";
-import { takeContext, writeTake, type PlannedClip, type TakeInput } from "./take";
+import { pickInputs, readPickSettings, takeContext, writeTake, type PlannedClip, type TakeInput } from "./take";
 import { readVision, verticalSafe, visualsIn } from "./vision";
 
 export type PickScores = {
@@ -40,10 +40,14 @@ function weighted(qs: BriefQuestion[], vals: Record<string, number>) {
 }
 
 export async function pickClips(ctx: JobContext, video: string, input: TakeInput) {
-  const { segs, outline, count, min, max, aspect, historyFile } = takeContext(video, input);
+  // Pick's inputs besides the brief, as they are now: its settings, your transcript notes, the transcript.
+  // The take records their fingerprints, and is up to date for as long as none of them changes.
+  const settings = readPickSettings(video);
+  const fingerprints = pickInputs(video);
+  const { segs, outline, count, min, max, aspect, historyFile } = takeContext(video, { ...input, count: settings.count ?? undefined });
   const editStyle = readEditStyle(outline);
-  const feedback = clip(feedbackDigest(video), 1500);
-  const notes = input.notes?.trim();
+  const notes = clip(notesDigest(video), 1500);
+  const direction = settings.direction || undefined;
   const vt = readVision(video);
   if (vt) ctx.log(`Using the vision transcript (${vt.shots.length} shots) alongside the audio`);
 
@@ -112,19 +116,19 @@ export async function pickClips(ctx: JobContext, video: string, input: TakeInput
   });
 
   const previous = listRuns().filter((r) => r.videoStem === parse(video).name).flatMap((r) => r.clips.map((c) => [c.start, c.end] as const));
-  ctx.log(`Jev pass C: judging ${windows.length} candidate clips (${brief.window.map((q) => q.label).join(", ")})${notes ? " and your direction" : ""}`);
+  ctx.log(`Jev pass C: judging ${windows.length} candidate clips (${brief.window.map((q) => q.label).join(", ")})${direction ? " and your direction" : ""}`);
   done = 0;
   const windowQ = toQuestions(brief.window);
   const judged = await pool(windows, 16, async ({ o, j }) => {
     const lines = segs.slice(o.i, j + 1).map((s) => s.text);
     const q: Record<string, Question> = { ...windowQ, tone: { type: "choice", instructions: "What is the clip's dominant appeal?", criteria: brief.tones } };
-    if (notes) q.direction = { type: "noul", instructions: `The clip matches this direction from the editor: "${notes}"` };
-    if (feedback) q.against = { type: "noul", instructions: "The clip repeats something the editor's feedback asked to avoid, or resembles a clip they dropped." };
+    if (direction) q.direction = { type: "noul", instructions: `The clip matches this direction from the editor: "${direction}"` };
+    if (notes) q.against = { type: "noul", instructions: "The clip goes against one of the editor's notes on the transcript." };
     const visuals = visualsIn(vt, segs[o.i].start, segs[j].end);
     if (visuals.length) q.visual = { type: "noul", instructions: "The shot log shows visuals that support what is being said and would hold attention on a phone screen." };
     const a = await ask(
       {
-        brief: full.summary, ...(notes ? { direction: notes } : {}), ...(feedback ? { editor_feedback: feedback } : {}),
+        brief: full.summary, ...(direction ? { direction } : {}), ...(notes ? { editor_notes: notes } : {}),
         clip_transcript: clip(lines.join("\n"), 6000),
         ...(visuals.length ? { shot_log: visuals } : {}),
       },
@@ -140,8 +144,8 @@ export async function pickClips(ctx: JobContext, video: string, input: TakeInput
     const s: PickScores = {
       tone,
       rows: [...brief.opener, ...brief.ending, ...brief.window].map((qq) => ({ key: qq.key, label: qq.label, value: all[qq.key] ?? 0 })),
-      ...(notes ? { direction: noul(a.direction) } : {}),
-      ...(feedback ? { against: noul(a.against) } : {}),
+      ...(direction ? { direction: noul(a.direction) } : {}),
+      ...(notes ? { against: noul(a.against) } : {}),
       ...(visuals.length ? { visual: noul(a.visual) } : {}),
       ...(v === null ? {} : { vertical: v }),
       repeat: previous.some(([ps, pe]) => Math.min(end, pe) - Math.max(start, ps) > 0.5 * (end - start)),
@@ -217,14 +221,14 @@ export async function pickClips(ctx: JobContext, video: string, input: TakeInput
     ctx, video,
     {
       model: stats.model || "Jev", aspect, historyFile, clips, segs,
-      info: { notes, inputs: { outline: hashText(outline), reference: referenceFingerprint(), brief: briefHash } },
+      info: { notes: direction, count: settings.count, inputs: { outline: hashText(outline), reference: referenceFingerprint(), brief: briefHash, ...fingerprints } },
     },
     {
       "engine.json": { engine: "workflow", model: stats.model, brief_model: full.model ?? null },
       "jev.json": {
         model: stats.model,
         stats: { calls: stats.calls, cost: stats.cost, openers: openers.length, endings: segs.length, candidates: windows.length, eligible: eligible.length },
-        direction: notes ?? null,
+        direction: direction ?? null,
         brief: full,
         clips: Object.fromEntries(picked.map((w, n) => [n + 1, w.s])),
         alternatives,

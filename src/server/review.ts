@@ -106,11 +106,17 @@ export function deleteNote(video: string, id: string) {
 
 // ── Feedback digest for the agents ──────────────────────────────────
 
-/** Everything the user said about this video's transcript and earlier runs, as plain text for a prompt. */
+/** Your notes pinned to transcript lines: one of Pick's inputs (reviews reach Pick through the Coach). */
+export function notesDigest(video: string): string {
+  return readNotes(video).map((n) => `- Transcript note at ${fmt(n.t)}: ${n.text}`).join("\n");
+}
+
+/** Everything the user said about this video's transcript and earlier runs, as plain text (for the Director). */
 export function feedbackDigest(video: string): string {
   const stem = parse(video).name;
   const out: string[] = [];
-  for (const n of readNotes(video)) out.push(`- Transcript note at ${fmt(n.t)}: ${n.text}`);
+  const notes = notesDigest(video);
+  if (notes) out.push(notes);
   for (const run of listRuns().filter((r) => r.videoStem === stem)) {
     const r = readReview(run.id);
     const lines: string[] = [];

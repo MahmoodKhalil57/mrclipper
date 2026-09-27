@@ -63,6 +63,10 @@ export function JobCard({ job, onStop, flash, defaultOpen }: { job: Job; onStop?
   );
 }
 
+/** Why an up-to-date step's trigger is off. */
+export const UP_TO_DATE =
+  "Up to date: none of its inputs changed since it ran, so running it again would give the same result. Change one of its inputs to run it again.";
+
 const STATE_LABEL: Record<string, string> = {
   empty: "add it", optional: "optional", locked: "waiting", ready: "ready", stale: "out of date",
   running: "running", waiting: "your turn", done: "done", failed: "failed", stopped: "stopped",

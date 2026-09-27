@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { actions, type BriefFile } from "../api";
 import { JobCard } from "../Common";
-import { BriefView, nodeJob, type PanelProps } from "./shared";
+import { BriefView, StepTrigger, nodeJob, type PanelProps } from "./shared";
 
 export function BriefPanel(p: PanelProps) {
   const node = p.wf.nodes.brief;
@@ -20,13 +20,13 @@ export function BriefPanel(p: PanelProps) {
           <div className="hint">
             {file
               ? `${file.brief.source === "llm" ? `Written by ${(file.brief.model ?? "the LLM").split("/").pop()}` : "Built-in (the LLM step failed)"} · ${when} · $${file.cost.toFixed(3)}${node.reason ? ` · ${node.reason}` : ""}`
-              : "One LLM call reads the outline, the style reference, your notes and a transcript sample, and writes what every judge uses."}
+              : "One LLM call reads the outline, the style reference and a transcript sample, and writes what every judge uses."}
           </div>
         </div>
         {job?.status === "running" ? (
           <button className="btn danger" onClick={() => p.stop(job.id)}>■ Stop</button>
         ) : (
-          <button className="btn primary" disabled={node.state === "locked"} onClick={() => p.step("brief")}>{file ? "↻ Rewrite" : "▶ Write brief"}</button>
+          <StepTrigger p={p} id="brief" first="Write brief" again="Rewrite" />
         )}
       </div>
       {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}

@@ -1,9 +1,11 @@
-// Step 4c · Render (code). ffmpeg renders each clip's edit: per-shot framing with face tracking,
-// camera moves, transitions, the take's colour and finishing, karaoke captions and the hook card.
-// It runs automatically in the workflow; you review the finished files afterwards.
+// Step 4c · Render (code). ffmpeg renders each clip's edit in one run (effects/compile.ts): per-shot
+// framing with face tracking, camera moves, transitions, effects, overlays, sounds and music, the take's
+// colour and finishing, captions and the hook card. It runs automatically in the workflow; you review the
+// finished files afterwards.
 //
-// render.json remembers what each file was rendered from (a hash of the clip's edit), so only clips
-// whose edit changed (you nudged an edge, Design ran again) are rendered again.
+// render.json remembers what each file was rendered from (a hash of the clip's edit, plus the effects and
+// asset files it uses), so only clips whose edit changed (you nudged an edge, Design ran again, you edited an
+// effect or replaced a file in assets/) are rendered again.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, parse } from "node:path";
 import { ROOT } from "../config";
@@ -11,7 +13,11 @@ import type { JobContext } from "../jobs";
 import { OUTLINE_FILE, readClipData, readText, readTranscript, rel, runDir, type ClipData } from "../library";
 import { fmt, run, type Segment } from "../lib";
 import { droppedClips } from "../review";
-import { buildAss, buildRender, framingParts, readEditStyle, rtl, type EditStyle } from "./edit";
+import { assetsFingerprint, listAssets, measureAssets, type Asset } from "../effects/assets";
+import { effectsFingerprint, loadCatalog } from "../effects/catalog";
+import { BITRATE_CAP, compileEdit, editDeps } from "../effects/compile";
+import { rtl } from "../effects/template";
+import { framingParts, readEditStyle, type EditStyle } from "./edit";
 import { probeAspect } from "./framing";
 import { hashText } from "./text";
 import { trackEdit } from "./track";
@@ -31,8 +37,13 @@ export function readManifest(runId: string): RenderManifest {
   }
 }
 
-/** What a clip's file depends on: its edges, its edit and the take's style. */
-export const editHash = (c: Clip, style: EditStyle | undefined) => hashText(JSON.stringify({ s: c.start, e: c.end, edit: c.edit ?? null, style: style ?? null }));
+/** What a clip's file depends on: its edges, its edit and the take's style, and the definitions of the
+ *  effects and the asset files it uses (edits made before the effects library hash as they always did). */
+export function editHash(c: Clip, style: EditStyle | undefined, assets: Asset[] = listAssets()) {
+  const base = { s: c.start, e: c.end, edit: c.edit ?? null, style: style ?? null };
+  const deps = c.edit?.segments?.length && c.edit.enabled !== false ? editDeps(c.edit, loadCatalog(), assets) : null;
+  return hashText(JSON.stringify(deps?.library ? { ...base, fx: effectsFingerprint(deps.defs), files: assetsFingerprint(deps.assets) } : base));
+}
 
 /** Per clip: rendered from its current edit, rendered from an older one, or not rendered. Dropped clips don't need a file. */
 export function renderStatus(runId: string) {
@@ -41,12 +52,13 @@ export function renderStatus(runId: string) {
   const m = readManifest(runId);
   const dropped = new Set(droppedClips(runId));
   const scriptTime = statSync(join(dir, "clip_script.md")).mtimeMs;
+  const assets = listAssets();
   const clips = data.clips.map((c) => {
     const file = join(dir, `clip_${pad2(c.id)}.mp4`);
     const has = existsSync(file);
     const entry = m.clips[c.id];
     // Takes rendered before render.json existed: a file newer than the clip data counts as current.
-    const fresh = has && (entry ? entry.hash === editHash(c, data.edit_style) && Math.round(statSync(file).mtimeMs) === entry.mtime : statSync(file).mtimeMs >= scriptTime - 2000);
+    const fresh = has && (entry ? entry.hash === editHash(c, data.edit_style, assets) && Math.round(statSync(file).mtimeMs) === entry.mtime : statSync(file).mtimeMs >= scriptTime - 2000);
     return { id: c.id, file: has ? rel(file) : null, fresh, dropped: dropped.has(c.id) };
   });
   const needed = clips.filter((c) => !c.dropped);
@@ -138,10 +150,13 @@ export async function renderTake(ctx: JobContext, input: RenderInput) {
     return { run: input.run, rendered: [], failed: [] };
   }
   ctx.log(`Rendering ${clips.length} clip(s)${vertical ? " as 9:16" : ""}`);
-  const style = data.edit_style ?? readEditStyle(readText(OUTLINE_FILE));
+  // The take's frozen settings, plus any added since it was made (loudness…), from the outline it was made with.
+  const style: EditStyle = { ...readEditStyle(readText(join(dir, "outline.md")) || readText(OUTLINE_FILE)), ...(data.edit_style ?? {}) };
   const allSegs = readTranscript(data.video) ?? [];
   const vt = readVision(data.video);
   const aspect = await probeAspect(data.video);
+  const catalog = loadCatalog();
+  const assets = await measureAssets(listAssets());
   const manifest = readManifest(input.run);
   const firstTime: { clip: Clip; out: string }[] = [];
   const done: number[] = [];
@@ -154,9 +169,7 @@ export async function renderTake(ctx: JobContext, input: RenderInput) {
     let ok = false;
 
     if (c.edit && c.edit.enabled !== false && c.edit.segments?.length) {
-      // Creative edit: multi-segment EDL with transitions, effects, karaoke captions and a hook card.
-      const ass = style.captions !== "none" || c.edit.title ? `clip_${id2}.ass` : null;
-      if (ass) writeFileSync(join(dir, ass), buildAss(c.edit, allSegs, style, vertical), "utf8");
+      // Creative edit: parts, transitions, effects, overlays, sounds, captions and a hook card.
       // Follow faces through each shot so people who walk around stay in the 9:16 window.
       const tracked = vertical && style.reframe
         ? await trackEdit(ctx, data.video, join(dir, "track"), c.edit, aspect, (a, b) => framingParts(vt, a, b)).catch((e) => {
@@ -165,8 +178,15 @@ export async function renderTake(ctx: JobContext, input: RenderInput) {
             return null;
           })
         : null;
-      const r0 = buildRender(c.edit, style, data.video, vertical, ass, `clip_${id2}.mp4`, vt, aspect, tracked?.parts);
-      ctx.log(`Clip ${c.id} "${c.title}": ${c.edit.segments.length} parts, ${c.edit.transitions.filter((t) => t !== "cut").length} transitions, ${r0.duration.toFixed(1)}s${tracked ? `; crop follows faces in ${tracked.moving} of ${tracked.total} shot parts` : ""}`);
+      const r0 = compileEdit({
+        edit: c.edit, style, video: data.video, vertical, aspect, vt, tracked: tracked?.parts, segs: allSegs,
+        catalog, assets, dir, name: `clip_${id2}`, out: `clip_${id2}.mp4`,
+      });
+      for (const [name, text] of Object.entries(r0.files)) writeFileSync(join(dir, name), text, "utf8");
+      const n = r0.counts;
+      const extras = [n.video && `${n.video} video effect${n.video > 1 ? "s" : ""}`, n.overlays && `${n.overlays} overlay${n.overlays > 1 ? "s" : ""}`, n.text && `${n.text} text`, n.sounds && `${n.sounds} sound${n.sounds > 1 ? "s" : ""}`, n.voice && `${n.voice} voice effect${n.voice > 1 ? "s" : ""}`, n.music && "music"].filter(Boolean);
+      ctx.log(`Clip ${c.id} "${c.title}": ${n.parts} parts, ${n.joins} transitions${extras.length ? `, ${extras.join(", ")}` : ""}, ${r0.duration.toFixed(1)}s${tracked ? `; crop follows faces in ${tracked.moving} of ${tracked.total} shot parts` : ""}`);
+      for (const note of r0.notes) ctx.log(`Clip ${c.id}: ${note}`, "warn");
       const r = await run(r0.args, {
         cwd: dir,
         signal: ctx.signal,
@@ -198,7 +218,7 @@ export async function renderTake(ctx: JobContext, input: RenderInput) {
         "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-progress", "pipe:1", "-nostats",
         "-ss", start.toFixed(2), "-i", data.video, "-t", dur.toFixed(2),
         ...(filters.length ? ["-vf", filters.join(",")] : []),
-        "-c:v", "libx264", "-crf", "20", "-preset", "veryfast",
+        "-c:v", "libx264", "-crf", "20", "-preset", "veryfast", ...BITRATE_CAP,
         "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart", `clip_${id2}.mp4`,
       ];
       ctx.log(`Clip ${c.id} "${c.title}": plain cut ${fmt(start)} to ${fmt(end)}`);
@@ -219,7 +239,7 @@ export async function renderTake(ctx: JobContext, input: RenderInput) {
       continue;
     }
     if (!manifest.clips[c.id]) firstTime.push({ clip: c, out });
-    manifest.clips[c.id] = { hash: editHash(c, data.edit_style), mtime: Math.round(statSync(out).mtimeMs), at: Date.now() };
+    manifest.clips[c.id] = { hash: editHash(c, data.edit_style, assets), mtime: Math.round(statSync(out).mtimeMs), at: Date.now() };
     writeFileSync(manifestPath(input.run), JSON.stringify(manifest, null, 1), "utf8");
     done.push(c.id);
   }

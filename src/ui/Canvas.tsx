@@ -9,7 +9,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { fileUrl, thumbUrl, type Job, type Library, type NodeId, type Run, type WfNode, type Workflow } from "./api";
-import { Film, StateChip } from "./Common";
+import { Film, StateChip, UP_TO_DATE } from "./Common";
 import { tc } from "./util";
 
 export const PHASES = ["Inputs", "Understand", "Brief", "Make", "Review", "Learn"] as const;
@@ -20,8 +20,8 @@ export const NODE_TITLE: Record<NodeId, string> = {
   pick: "Pick clips", design: "Design edits", render: "Render", check: "Check",
   review: "Review", coach: "Coach",
 };
-/** The one action each node offers (inputs and Review open their panel instead). */
-const ACTION: Partial<Record<NodeId, [first: string, again: string]>> = {
+/** The one action each node offers: its first run, and a run after an input changed (inputs and Review open their panel). */
+const ACTION: Partial<Record<NodeId, [first: string, outOfDate: string]>> = {
   transcript: ["Transcribe", "Redo missing"], refstyle: ["Analyse", "Re-analyse"], brief: ["Write brief", "Rewrite"],
   pick: ["Pick clips", "New take"], design: ["Design", "Redesign"], render: ["Render", "Re-render"], check: ["Check", "Re-check"],
   coach: ["Coach", "Coach again"],
@@ -84,11 +84,12 @@ function StepButton({ d }: { d: NodeData }) {
   if (node.state === "running" && job?.status === "running") return <button className="btn sm danger" onClick={() => h.stop(job.id)}>■ Stop</button>;
   const labels = ACTION[node.id];
   if (!labels) return <button className="btn sm" onClick={() => h.open(node.id)}>{node.id === "review" ? (node.state === "waiting" ? "Review clips" : "Open") : node.state === "empty" || node.state === "optional" ? "Add" : "Edit"}</button>;
-  const again = node.state === "done" || node.state === "waiting";
+  // Idempotent: a step that's up to date with its inputs would only give the same result again.
+  if (node.state === "done" || node.state === "waiting") return <button className="btn sm up-to-date" disabled title={UP_TO_DATE}>✓ Up to date</button>;
   const primary = node.state === "ready" || node.state === "stale" || node.state === "failed" || node.state === "stopped";
   return (
     <button className={`btn sm ${primary ? "primary" : ""}`} disabled={node.state === "locked" || node.state === "optional"} onClick={() => h.step(node.id)}>
-      {again ? `↻ ${labels[1]}` : `▶ ${labels[0]}`}
+      {node.state === "stale" ? `▶ ${labels[1]}` : `▶ ${labels[0]}`}
     </button>
   );
 }

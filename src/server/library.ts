@@ -3,6 +3,8 @@ import { basename, extname, join, parse, relative, resolve, sep } from "node:pat
 import { ROOT, VIDEOS_DIR, VIDEO_EXTS } from "./config";
 import { probeDuration, type Segment } from "./lib";
 import { readVision } from "./agents/vision";
+import { loadCatalog } from "./effects/catalog";
+import { timelineView } from "./effects/timeline";
 
 export const OUTLINE_FILE = join(ROOT, "clip_outline.md");
 export const CLIPS_DIR = join(ROOT, "clips");
@@ -168,7 +170,12 @@ export function listRuns() {
           const has = existsSync(file);
           // Clip transcript of the finished file (watch.ts); stale once the clip is re-cut.
           const watch = has ? readJsonFile(join(dir, "watch", `clip_${String(c.id).padStart(2, "0")}`, "watch.json")) : null;
-          return { ...c, file: has ? rel(file) : null, watch: watch && { ...watch, audio: watch.audio && { text: watch.audio.text, match: watch.audio.match }, fresh: watch.mtime === Math.round(statSync(file).mtimeMs) } };
+          // Where every part, join and effect plays in the finished clip, for drawing the edit.
+          let timeline = null;
+          try {
+            timeline = c.edit?.segments?.length ? timelineView(c.edit, data?.edit_style ?? { transitionLength: 0.25 }, loadCatalog()) : null;
+          } catch {}
+          return { ...c, file: has ? rel(file) : null, timeline, watch: watch && { ...watch, audio: watch.audio && { text: watch.audio.text, match: watch.audio.match }, fresh: watch.mtime === Math.round(statSync(file).mtimeMs) } };
         }),
       };
     })

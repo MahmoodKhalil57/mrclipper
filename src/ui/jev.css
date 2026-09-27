@@ -153,3 +153,5 @@
 
 :root { --reference: var(--transcribe); }
 .job.reference, .tray-item.reference { --c: var(--transcribe); }
+.design-chips a { font: 10px var(--mono); padding: 3px 6px; border-radius: 5px; background: color-mix(in oklab, var(--plan) 12%, transparent); color: var(--ink-2); }
+.design-chips a:hover { color: var(--ink); background: color-mix(in oklab, var(--plan) 24%, transparent); }

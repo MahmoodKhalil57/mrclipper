@@ -7,6 +7,7 @@ import { checkTake } from "./agents/check";
 import { coachOutline } from "./agents/coach";
 import { designEdits } from "./agents/design";
 import { pickClips } from "./agents/pick";
+import { readPickSettings, savePickSettings } from "./agents/take";
 import { analyzeReference, newReference, pendingGuide, readReference, saveReference } from "./agents/reference";
 import { renderTake, type RenderInput } from "./agents/render";
 import { transcribe } from "./agents/transcribe";
@@ -97,11 +98,13 @@ export function startBrief(ref: string): Job {
 
 // ── 4 · Make ────────────────────────────────────────────────────────
 
-export function startPick(args: { video: string; notes?: string; count?: number }): Job {
+/** Pick reads its settings (direction, clip count) from its saved inputs; any given here are saved first. */
+export function startPick(args: { video: string; direction?: string; count?: number | null }): Job {
   const video = resolveVideo(args.video);
   if (!readTranscript(video)) throw new Error("No transcript yet. Transcribe the video first.");
-  const input = { video: basename(video), ...(args.notes?.trim() ? { notes: args.notes.trim() } : {}), ...(args.count ? { count: args.count } : {}) };
-  return runningDuplicate("pick", input) ?? startJob("pick", `Pick clips from ${basename(video)}`, input, (ctx) => pickClips(ctx, video, input));
+  const s = args.direction !== undefined || args.count !== undefined ? savePickSettings(video, args) : readPickSettings(video);
+  const input = { video: basename(video), ...(s.direction ? { direction: s.direction } : {}), ...(s.count ? { count: s.count } : {}) };
+  return runningDuplicate("pick", input) ?? startJob("pick", `Pick clips from ${basename(video)}`, input, (ctx) => pickClips(ctx, video, { video: basename(video) }));
 }
 
 export function startDesign(run: string): Job {

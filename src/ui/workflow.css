@@ -82,3 +82,6 @@
 .check-card { background: color-mix(in oklab, var(--who-jev) 5%, var(--bg)); border: 1px solid color-mix(in oklab, var(--who-jev) 25%, var(--line)); border-radius: 8px; padding: 7px 9px; margin-top: 6px; }
 .check-card .scores { display: grid; gap: 3px; }
 .cut-line.dropped { opacity: 0.55; }
+
+/* An up-to-date step's trigger: off (running it again would give the same result), and says why on hover. */
+.btn.up-to-date:disabled { opacity: 1; color: var(--ok); border-color: color-mix(in oklab, var(--ok) 30%, var(--line)); background: color-mix(in oklab, var(--ok) 7%, transparent); cursor: help; }

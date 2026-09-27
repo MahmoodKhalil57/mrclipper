@@ -33,8 +33,11 @@ The first line must work cold. The last line should land: a punchline, a strikin
 - **Jump-cut zoom:** yes
 - **Transitions:** cut, crossfade, zoom, whip
 - **Transition length:** 0.4 seconds
+- **Effect intensity:** moderate
 
 Keep it tight and moving. Every cut should earn its place.
+
+Transitions can also be `any`, or names from the effects library (Design panel → Browse the effects): `flash_cut`, `impact_cut`, `glitch_cut`, `blur`, `dip_black`, every ffmpeg transition. Effect intensity is `subtle`, `moderate` or `heavy`: how many effects the editor adds.
 
 ## Visual effects
 
@@ -48,6 +51,9 @@ Keep it tight and moving. Every cut should earn its place.
 - **Letterbox bars:** no
 - **Fade in and out:** no
 - **Flashback look:** none
+- **Effects:** any
+
+Effects are what the editor may put on a clip's timeline: text, graphics, your GIFs and stickers, voice treatments and video effects such as `shake`, `zoom_punch`, `glitch`, `speed_lines` or `big_text`. Write `any`, `none`, or the names you allow.
 
 ## Captions style
 
@@ -67,9 +73,14 @@ Keep it tight and moving. Every cut should earn its place.
 
 ## Music
 
-Not applied yet; notes here are for you.
+Music comes from your files in `assets/music` (name them for their mood, like `sad_piano_slow.mp3`), ducked under speech. Add a **Music mood:** line to say which kind fits.
 
 - **Background music:** no
+- **Music volume:** low
+- **Sound effects:** any
+- **Loudness:** -14 LUFS
+
+Sound effects are generated (`whoosh`, `impact`, `riser`, `pop`, `ding`, `heartbeat`…) or your files in `assets/sfx`: `any`, `no`, or the names you allow. Loudness masters every clip; short-form apps play at about -14 LUFS.
 
 ## Previous clip attempts
 

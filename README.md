@@ -39,7 +39,7 @@ Everything a checkout writes stays inside it, in `.store/` (gitignored):
 
 | Folder | What's in it |
 |---|---|
-| `.store/workspace/` | the **workspace**: your videos (`videos/`), `transcripts/`, `clips/`, `outlines/`, `references/`, and `clip_outline.md`, which starts as a copy of `templates/clip_outline.md` |
+| `.store/workspace/` | the **workspace**: your videos (`videos/`), `transcripts/`, `clips/`, `outlines/`, `references/`, your files for edits (`assets/`) and your own effects (`effects/`), and `clip_outline.md`, which starts as a copy of `templates/clip_outline.md` |
 | `.store/state/` | settings, thumbnails, job history, and the Director's conversations |
 | `.store/tools/` | ffmpeg, yt-dlp, the face model and its Python |
 
@@ -61,7 +61,7 @@ Paths in the last column are inside the workspace.
 | | Reference style | Transcriber | the reference measured and described, focused on the copy guide | `references/<id>/reference.json` |
 | **3 Brief** | Brief | LLM writes | Jev's questions for picking clips, edit and hook-card guidance, and the rules every finished clip is checked on | `transcripts/<video>/brief.json` |
 | **4 Make** | Pick clips | Jev judges | a new **take**: the best clips that don't overlap | `clips/<take>/clip_script.md`, `take.json`, `jev.json` |
-| | Design edits | Jev judges | camera moves, transitions, flashbacks, the hook card (from the LLM's options), emphasis words | `clips/<take>/design.json` |
+| | Design edits | LLM writes, Jev judges | an edit per clip from the effects library and your files (two plans, Jev picks one), the hook card and emphasis words | `clips/<take>/design.json` |
 | | Render | code | the finished 9:16 clips | `clips/<take>/*.mp4`, `render.json` |
 | | Check | Transcriber + Jev | each clip heard and watched, then rated on the brief's rules and its in and out points | `clips/<take>/check.json`, `watch/` |
 | **5 Review** | Review | you | keep or drop each clip, nudges, comments | `clips/<take>/review.json` |
@@ -72,7 +72,8 @@ The Coach's output wires back into the Outline, which closes the loop: the next 
 ## Making clips
 
 1. **Add a video.** Drop a file on the window, click **+ Add video**, or paste a YouTube link. Each video is a project; switch between them from the thumbnail menu in the top bar.
-2. **Check the outline.** A new workspace starts from a template. Its bold settings (clip count and length, allowed transitions and zooms, captions, colour grade) are read by the renderer.
+2. **Check the outline.** A new workspace starts from a template. Its bold settings are rules: clip count and length, the transitions, camera moves and effects allowed, music, captions, the colour grade. Its prose steers the edit.
+   Put any sound effects, music, GIFs and stickers you want used in the workspace's `assets/` folder.
 3. **Optionally add a style reference.** On the Reference clip node, upload a short (or paste a TikTok, Reels or Shorts link) and say what to copy from it: "the fast cuts and the two-word captions".
 4. **Press ▶ Run.** It does every step that isn't done, in order, and stops at Review. The button shows how many steps it will do; hover it to see which. **■ Stop run** stops the current step too.
 5. **Review** the finished clips. Each one plays next to its Check card (how it did on the brief's rules, and whether its edges are clean). **Keep** or **Drop** it, nudge its **In** and **Out** points, and comment. Then **Finish review**. Clips you don't drop count as kept.
@@ -85,6 +86,8 @@ The Coach's output wires back into the Outline, which closes the loop: the next 
 
 Click any node to see what it made. Every node also has its own ▶ button to run just that step, and every running job has ■ Stop: on its node, in the tray under the canvas, and in the panels.
 
+**Steps are idempotent.** Every output records fingerprints of the inputs it was made from. While they still match, the step is up to date: its button reads **✓ Up to date** and is off, because running it again would give the same result. The server refuses the re-run too, so the Director can't repeat a step either. To run a step again, change one of its inputs; going back to earlier inputs brings back what was already made from them.
+
 ### Node states
 
 Every node is in one of these states, computed the same way for all of them from what's on disk and which jobs are running:
@@ -95,7 +98,7 @@ Every node is in one of these states, computed the same way for all of them from
 | waiting | needs an earlier step first |
 | ready | can run now |
 | running | working; ■ Stop is on the node |
-| done | up to date |
+| done | up to date with its inputs; it won't run again until one of them changes |
 | out of date | ▶ Run will redo it: an input changed since it was made, or a step before it runs again |
 | your turn | Review, or a Coach proposal to apply or discard |
 | failed · stopped | the last run of it failed or you stopped it |
@@ -104,18 +107,19 @@ What makes each step out of date:
 - **Transcript:** it has no vision transcript, or its word timings weren't measured.
 - **Reference style:** the copy guide changed.
 - **Brief:** the outline or the style reference changed, or an update to mrClipper changed how briefs are written. It's cached per video, so re-running costs no LLM call until one of those happens.
-- **Pick clips:** the take was made from an older brief. A take never changes its inputs, so ▶ Run makes a new take. Takes made before this version of the workflow show as out of date for the same reason.
-- **Render:** a clip's edit changed, for example because you nudged an edge. Only that clip is rendered again.
+- **Pick clips:** the take was made from an older brief, or Pick's settings (a direction and a clip count, in its panel) changed, or your transcript notes did, or the transcript did. A take never changes its inputs, so ▶ Run makes a new take, unless an earlier take was made from exactly the current inputs: then that take is shown again and nothing runs. Takes made before this version of the workflow show as out of date.
+- **Design edits:** your `effects/` or `assets/` changed since it ran, or it was designed before the effects library.
+- **Render:** a clip's edit changed (for example, you nudged an edge), or an effect or file it uses changed. Only that clip is rendered again.
 - **Check:** a clip was rendered again since it was checked.
 - **Any step after one that runs again:** for example, Check after Render, or Design, Render and Check when Run makes a new take.
 
-The Coach is ready whenever there are reviews it hasn't learned from yet. ▶ Run coaches only when nothing else is due and you've finished reviewing the latest take.
+The Coach is ready when what it learns from changed since it last ran: new reviews or checks on the takes it reads, the outline, or the style reference. A new direction typed in its panel counts too. ▶ Run coaches only when nothing else is due and you've finished reviewing the latest take.
 
 ## The steps in detail
 
 ### Brief (LLM writes)
 
-This is the one place an LLM turns your inputs into what every judge uses. One call (about 15 s and $0.0016) reads the outline, the style reference and copy guide, your notes and feedback, and a sample of the transcript. It writes:
+This is the one place an LLM turns your inputs into what every judge uses. One call (about 15 s and $0.0016) reads the outline, the style reference and copy guide, and a sample of the transcript. Your reviews reach it only through the Coach, as outline changes, so reviewing a take doesn't put the brief out of date. It writes:
 - **for Pick:** questions about openers, endings and whole clips, with weights. It also sets the tone categories, which tones to prefer, and up to two safety gates (capped at 0.5; if too few clips pass, the gates relax and the rest are scored down instead of the take failing).
 - **for Design:** a "use when…" line for each allowed camera move and transition, and how hook cards should read.
 - **for Check:** 5 to 10 checkable rules from the outline, plus one per style-reference trait.
@@ -130,30 +134,49 @@ Jev can't write a clip list, so the work is split up: code proposes candidates, 
 3. **Clips:** the best openers are paired with good endings of an allowed length. Jev judges each pair on the brief's clip questions, tone, your direction, your earlier feedback and the visuals.
 4. **Selection:** by score, with the safety gates, no overlaps, and a spread across tones. Moments used in earlier takes are scored down.
 
-On the 10-minute test video that was 493 decisions in 10 s for $0.016. The **Pick** panel has a direction field and a clip count for the next take, plus **▶ Make a new take**, which runs Pick, Design, Render and Check even when the current take is up to date.
+On the 10-minute test video that was 493 decisions in 10 s for $0.016.
 
-### Design edits (Jev judges; the LLM writes options)
+Pick's inputs are the brief, the transcript, your notes pinned to transcript lines, and its own settings: a direction for Jev and a clip count, saved per video in its panel. Change a setting and the panel offers **▶ Make a new take** (Run: Pick, Design, Render, Check), **Pick only**, or **Save** for a later Run. If an earlier take was picked with exactly those settings and the same other inputs, it offers **↩ Back to take N** instead, which brings that take back without running anything.
 
-For each clip, Jev picks:
-- **a camera move** for each part, from the outline's allowed zooms, using the brief's guidance. When two parts in a row get the same move, Jev's runner-up is used if it scored at least 15%.
-- **flashbacks:** whether a part recalls an earlier moment (at least 60% sure). A flashback gets the outline's flashback look.
-- **the final beat:** whether the last part is where the moment ends (at least 60% sure). If so, the camera pulls back.
-- **a transition** for each gap, from the allowed transitions. At most one flash is kept per clip.
-- **the hook card:** one LLM call writes three options per clip in the clip's language, and Jev picks the one most likely to stop a scroller.
-- **emphasis words:** the LLM proposes up to five words from the clip, and Jev keeps up to three that carry its feeling.
+### Design edits (LLM writes, code checks, Jev judges)
 
-The panel shows every choice with Jev's odds. If the LLM call fails, the clips keep placeholder titles and no hook card.
+Design edits each clip like a professional editor would, from the effects library (below) and your files in `assets/`. For every clip:
+1. **The LLM plans two edits.** It reads the outline, the brief, the style reference, the clip's words (numbered, with times) and what's on screen, and writes two genuinely different plans. Each plan covers a camera move, looks, speed, freeze frames or reversing for each part, a transition for each join, and effects on the timeline: text, graphics, your GIFs and stickers, generated or file sounds, treatments of the clip's own voice, music, and video effects over a time range. Hits land on words: "a zoom punch and an impact at word 23".
+2. **Code checks each plan.** It keeps only what the outline allows (below), what exists (effects, your files) and what lands on a real moment of the clip. It caps the amount at the outline's effect intensity and keeps the clip under its maximum length. Then it test-runs each plan in ffmpeg. An effect that doesn't render is found and dropped. Every change is noted.
+3. **Jev picks the plan** a professional short-form editor would choose for this clip, given the brief, the outline's rules and the style reference.
+4. **The hook card and emphasis words:** one LLM call writes three hook-card options per clip in the clip's language, and Jev picks the one most likely to stop a scroller. The LLM also proposes up to five words from the clip, and Jev keeps up to three that carry its feeling.
+
+The panel shows both plans with Jev's odds, what each one does, the checks' notes, and the chosen edit as a timeline, with lanes for picture, text and sound. If the LLM can't plan a clip, Jev picks a camera move per part and a transition per join instead, as before.
+
+**What the outline controls.** Its bold settings are rules the plans must follow, so an outline can ask for a quiet, sad edit or a dense anime one:
+
+| Setting | Controls | Example |
+|---|---|---|
+| **Transitions:** | the transitions allowed at joins | `crossfade, dip_black, blur` or `any` |
+| **Zoom effects:** | the camera moves allowed per part | `slow_push, zoom_out, drift` or `any` |
+| **Flashback look:** | the look allowed per part | `black and white` |
+| **Effects:** | the timeline effects allowed; leave it out for all of them | `shake, zoom_punch, flash, speed_lines, big_text` or `none` |
+| **Sound effects:** | the sounds allowed; leave it out for all of them | `whoosh, impact, heartbeat` or `no` |
+| **Background music:** | music under the clip, from `assets/music` | `yes`, or a file: `` `sad_piano.mp3` `` |
+| **Music mood:** / **Music volume:** | which track fits, and how loud | `slow solo piano` / `low` |
+| **Effect intensity:** | how much the planner does | `subtle`, `moderate` or `heavy` |
+| **Loudness:** | the level every clip is mastered to | `-14 LUFS` (the default) or `off` |
+
+The outline's prose steers the plans too ("slow motion on the quiet beat after the laugh"). The house style is applied to every clip anyway: the colour grade, vignette, grain, glow, bars, fades, captions and the hook card.
 
 ### Render (code)
 
-ffmpeg renders each clip's edit, which is an edit decision list rather than a single range:
-- **segments:** source ranges in play order, so a cold open can put the payoff first.
-- **transitions:** `cut`, `crossfade`, `dip_black`, `slide`, `zoom`, `whip`, `flash`, `iris` or `blur`.
-- **per-segment effects:** `punch_in`, `slow_push`, `ken_burns`, `zoom_out`, `drift`, speed from 0.8× to 1.5×, and a flashback look (`bw` or `sepia`).
+ffmpeg renders each clip's edit in one run. The edit is more than a single range:
+- **parts:** source ranges in play order, so a cold open can put the payoff first. Each part has its camera move and looks, a speed from 0.25× (slow motion) to 4×, an optional freeze frame at its end, and can play reversed (up to 3 s).
+- **joins:** a cut, any of ffmpeg's 58 transitions, or an editor's transition, such as a flash cut, an impact cut (a flash plus a zoom punch), a glitch cut, a blur into a memory, or one of your GIFs played over the cut.
+- **timeline effects**, each over its own time range: text, graphics, your overlays, sounds, voice treatments, music and video effects. A video effect's stretch is cut out, processed and spliced back, so an effect costs only its own frames.
+- **sound:** the voice with its treatments, generated sounds and your sound files, and music ducked under speech, mixed and mastered to the outline's loudness (−14 LUFS unless it says otherwise, peaks under −1.5 dBTP).
 - **whole-clip finishing, set in the outline:** a colour grade (`subtle`, `punchy`, `warm`, `cinematic` or `nostalgic`), vignette, film grain, glow, letterbox bars, and a fade in and out.
-- **the hook card and captions:** an ASS file rendered by libass, so Arabic shaping works. Captions light up word by word from the measured word timings, and emphasis words get their own colour.
+- **captions, the hook card and text effects:** one ASS file rendered by libass, so Arabic shaping works. Captions follow the measured word timings: `karaoke` lights each word as it's spoken, `pop` pops each word in as it's said, `box` puts karaoke on a box, and `plain` shows whole lines. Emphasis words get their own colour. Fonts in `assets/fonts` can be named as the caption font.
 
-Rendering runs automatically; you review the finished files. `render.json` remembers what each file was rendered from, so only clips whose edit changed are rendered again. Slow push and Ken Burns are the slowest effects, at about 1.5× real time.
+The video is H.264 at quality 20, capped at 12 Mbit/s. Film grain is noise the encoder can't compress, so without the cap a strongly grained minute came out at about 400 MB.
+
+Rendering runs automatically; you review the finished files. `render.json` remembers what each file was rendered from, including the definitions of the effects and the files each clip uses. Only clips whose edit changed, or an effect or file they use, are rendered again. Slow push and Ken Burns are the slowest effects, at about 1.5× real time.
 
 **Vertical framing.** When a 16:9 video becomes 9:16, each shot gets its own framing, based on faces measured locally with OpenCV's YuNet detector:
 - **crop:** one person, or everyone who fits in a 9:16 window, framed on their faces.
@@ -166,6 +189,35 @@ People move around inside a shot, so before rendering, faces are sampled every 0
 - It stays with the current person when the group is too spread to frame.
 
 Split screens track each person separately. Zoom effects apply only to crops, because zooming a split screen or a group cut off the people at the sides. Tracks are cached in `clips/<take>/track/`.
+
+### The effects library
+
+About 160 effects, in nine kinds. **Browse the effects** in the Design panel lists them all with their settings.
+
+| Kind | Where | Examples |
+|---|---|---|
+| camera moves, looks | a whole part | `slow_push`, `punch_in`, `zoom_out`, `ken_burns`, `drift`, `bw`, `sepia` |
+| transitions | a join | `crossfade`, `dip_black`, `blur`, `flash_cut`, `impact_cut`, `glitch_cut`, `whip_blur`, `asset_wipe`, and every ffmpeg `xfade` |
+| video effects | a time range | `zoom_punch`, `zoom_to`, `shake`, `spin`, `glitch`, `rgb_split`, `vhs`, `film`, `glow`, `edge_glow`, `motion_blur`, `trails`, `invert`, `grade`, `lut` |
+| graphics | a time range | `flash`, `dip`, `border_glow`, `neon_border`, `speed_lines`, `light_leak`, `progress_bar` |
+| text and shapes | a time range | `big_text`, `type_on`, `banner`, `lower_third`, `callout`, `arrow`, `circle`, `highlight_box` |
+| your files | a time range | `overlay`: a GIF, a WebM or MOV with transparency, a PNG, or a green-screen clip, keyed |
+| sounds | a moment or a range | `whoosh`, `impact`, `boom`, `riser`, `pop`, `ding`, `heartbeat`, `sparkle`, `typing`, `sad_drone`, `vinyl`, or `sfx` with your file |
+| the clip's own audio | a time range | `reverb`, `echo`, `muffled`, `telephone`, `pitch`, `bass_boost`, `robot`, `mute`, `reverse_audio` |
+| music | a time range | `music`: a track from `assets/music`, ducked under speech |
+
+**Your files** go in the workspace's `assets/` folder: `sfx/`, `music/`, `overlays/`, `images/`, `luts/` and `fonts/`. Use **Open assets folder** or **＋ Add files** in the Design panel. Name them for what they are ("whoosh_long", "sad_piano_slow"), because the planner reads the names. Adding or replacing a file puts Design out of date, so the next Run plans with it.
+
+**Your own effects** go in the workspace's `effects/` folder, one JSON file per effect, in the same shape as the built-ins in `src/server/effects/builtin.ts`. A file with a built-in's name replaces it. An effect is a template: an ffmpeg filter chain, a lavfi picture or sound source, or ASS lines, with `{{placeholders}}` for its settings and the render context (`W`, `H`, `fps`, `dur`, `from`, `to`). Templates are data, not code: filters that read files or take outside commands are refused, and a bad file is skipped with a note. For example:
+
+```json
+{ "name": "pulse", "kind": "video", "timing": "range", "tags": ["beat", "alarm"],
+  "description": "The picture pulses brighter and darker: a heartbeat, an alarm, a beat.",
+  "params": { "rate": { "type": "number", "min": 0.5, "max": 6, "default": 2, "doc": "pulses per second" } },
+  "filter": "eq=brightness='0.12*abs(sin(t*{{rate}}*PI))':eval=frame" }
+```
+
+`bun scripts/effects-test.ts` renders every effect on a generated test clip. `--frames <dir>` also saves a frame from inside each one, with contact sheets, and `--workspace <dir>` includes that workspace's own effects and files.
 
 ### Check (Transcriber + Jev judges)
 
@@ -225,7 +277,7 @@ The chat dock on the left is the **Director**, a [Think](https://developers.clou
 | Planner | `/mcp/plan` | `workflow_status`, `run_workflow`, `run_step`, `read_outline`, `update_outline`, `read_brief`, `read_feedback`, `read_history`, `set_style_reference`, `outline_scores`, `job_status` |
 | Editor | `/mcp/extract` | `list_takes`, `read_take`, `adjust_clip`, `read_clip_script`, `job_status` |
 
-It uses `run_workflow` by default, the same as ▶ Run, and `run_step` for a single step. It can't review clips or apply an outline proposal: those are yours. Any comment has an *ask Director* link that sends it there.
+It uses `run_workflow` by default, the same as ▶ Run, and `run_step` for a single step. Both answer with the reason, instead of a job, when there's nothing to redo. For a different take it passes a new direction, which becomes Pick's setting. It can't review clips or apply an outline proposal: those are yours. Any comment has an *ask Director* link that sends it there.
 
 ## How it runs
 
@@ -268,6 +320,7 @@ bun run setup          # get or check the tools in .store/tools
 bun run build          # the Director bundle, the UI and the server, into dist/
 bun start              # serve the last build
 bun run typecheck
+bun scripts/effects-test.ts   # render every effect on a test clip
 bun run desktop        # the desktop app window, from this checkout (Electrobun dev build)
 bun run desktop:build  # the standalone Windows installer, into artifacts/
 ```

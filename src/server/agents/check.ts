@@ -13,6 +13,7 @@ import { readClipData, readTranscript, runDir } from "../library";
 import { droppedClips } from "../review";
 import type { CheckRule } from "./brief";
 import { takeBrief } from "./design";
+import { gapOf } from "../effects/timeline";
 import { clipStr } from "./text";
 import { readWatch, watchClips, watchSummary } from "./watch";
 import type { Segment } from "../lib";
@@ -135,7 +136,10 @@ export async function checkTake(ctx: JobContext, runId: string, opts: { only?: n
             seconds: Math.round(c.end - c.start),
             clip_transcript: clipStr(w?.audio?.text || planned, 3000),
             ...(w ? { finished_clip: watchSummary(w), frames: w.frames.map((f) => `${f.t.toFixed(0)}s ${f.desc ?? ""}${f.effect ? ` [${f.effect}]` : ""}${f.captions ? ` captions: ${f.captions}` : ""}`).slice(0, 14) } : {}),
-            edit: e?.segments?.length ? { parts: e.segments.map((s) => s.zoom ?? "none"), transitions: e.transitions, looks: e.segments.map((s) => s.look ?? "") } : undefined,
+            edit: e?.segments?.length ? {
+              parts: e.segments.map((s) => s.zoom ?? "none"), transitions: e.transitions.map((g) => gapOf(g).fx), looks: e.segments.map((s) => s.look ?? ""),
+              ...(e.fx?.length ? { effects: [...new Set(e.fx.map((f) => f.fx))] } : {}), ...(e.concept ? { concept: `${e.concept.name}: ${e.concept.idea}` } : {}),
+            } : undefined,
           }, ruleQ, ctx.signal)
         : null,
       segs.length ? edgeCheck(segs, c, ctx.signal) : null,

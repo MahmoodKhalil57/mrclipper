@@ -7,14 +7,17 @@ import { readBrief } from "./agents/brief";
 import { applyProposal, discardProposal, restoreVersion, versionText } from "./agents/outlines";
 import { addReferenceFile, clearReference, pendingGuide, readReference, setGuide } from "./agents/reference";
 import { readVision } from "./agents/vision";
+import { ASSETS_DIR, ASSET_FOLDERS, ensureAssetsDir, listAssets, measureAssets } from "./effects/assets";
+import { EFFECTS_DIR, loadCatalog } from "./effects/catalog";
+import type { AssetKind } from "./effects/template";
 import { DATA_DIR, ROOT, VIDEOS_DIR, VIDEO_EXTS, WORKSPACE_CONFIG, WORKSPACE_FIXED } from "./config";
 import { cancelJob, getJob, type Job } from "./jobs";
 import { clearBrowserKey, keyInfo, setBrowserKey } from "./key";
 import { readTranscript, rel, resolveVideo, runDir } from "./library";
-import { adjustClipEdges } from "./agents/take";
+import { adjustClipEdges, savePickSettings } from "./agents/take";
 import { run } from "./lib";
 import { addComment, addNote, deleteComment, deleteNote, feedbackDigest, readNotes, readReview, setApproved, setClipStatus } from "./review";
-import { startWorkflow, workflowState, type NodeId } from "./workflow";
+import { startWorkflow, stepUpToDate, workflowState, type NodeId } from "./workflow";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
@@ -22,9 +25,17 @@ const fail = (e: unknown, status = 400) => json({ error: e instanceof Error ? e.
 
 const THUMBS = join(DATA_DIR, "thumbs");
 
-/** One step of the workflow, started from its node on the canvas. */
-function startStep(b: Record<string, any>): Job {
+/** One step of the workflow, started from its node on the canvas. A step that's up to date with its inputs
+ *  doesn't run (it would give the same result): the answer says why. `force` overrides that, for the API only. */
+function startStep(b: Record<string, any>): Job | { skipped: string } {
   const step = b.step as NodeId;
+  const video = b.video ? String(b.video) : undefined;
+  // Pick's settings sent with the step are saved first: they're its inputs, and may make it due.
+  if (step === "pick" && video && (b.direction !== undefined || b.count !== undefined)) {
+    savePickSettings(resolveVideo(video), { direction: b.direction, count: b.count === undefined ? undefined : b.count === null || b.count === "" ? null : Number(b.count) });
+  }
+  const why = b.force ? null : stepUpToDate(step, video, b.take ? String(b.take) : null, { direction: b.direction });
+  if (why) return { skipped: why };
   const take = () => {
     if (!b.take) throw new Error("Pick a take first");
     return String(b.take);
@@ -33,7 +44,7 @@ function startStep(b: Record<string, any>): Job {
     case "transcript": return startTranscript(String(b.video));
     case "refstyle": return startRefStyle();
     case "brief": return startBrief(String(b.video));
-    case "pick": return startPick({ video: String(b.video), notes: b.notes, count: b.count ? Number(b.count) : undefined });
+    case "pick": return startPick({ video: String(b.video) });
     case "design": return startDesign(take());
     case "render": return startRender({ run: take(), only: b.only, force: !!b.force });
     case "check": return startCheck({ run: take(), only: b.only });
@@ -53,9 +64,18 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
     if (path === "/api/workflow") return json(workflowState(q("video"), q("take") || null));
     if (path === "/api/run" && m === "POST") {
       const b = await body();
-      return json({ job_id: startWorkflow({ video: String(b.video ?? ""), take: b.take, notes: b.notes, count: b.count, fresh: !!b.fresh }).id });
+      const r = startWorkflow({ video: String(b.video ?? ""), take: b.take, direction: b.direction, count: b.count });
+      return json("skipped" in r ? r : { job_id: r.id });
     }
-    if (path === "/api/step" && m === "POST") return json({ job_id: startStep(await body()).id });
+    if (path === "/api/step" && m === "POST") {
+      const r = startStep(await body());
+      return json("skipped" in r ? r : { job_id: r.id });
+    }
+    // Pick's settings (a direction and a clip count): its inputs for the next take.
+    if (path === "/api/pick" && m === "PUT") {
+      const b = await body();
+      return json(savePickSettings(resolveVideo(String(b.video ?? "")), { direction: b.direction, count: b.count === "" ? null : b.count }));
+    }
     const cancel = path.match(/^\/api\/jobs\/([\w-]+)\/cancel$/);
     if (cancel && m === "POST") {
       if (!getJob(cancel[1])) return fail("Unknown job", 404);
@@ -122,6 +142,40 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
 
     // ── 3 · Brief ──────────────────────────────────────────────
     if (path === "/api/brief") return json(readBrief(resolveVideo(q("video"))));
+
+    // ── 4 · Design: the effects library and your files ─────────
+    if (path === "/api/effects") {
+      const cat = loadCatalog();
+      const assets = await measureAssets(listAssets());
+      return json({
+        effects: cat.effects.map(({ name, kind, timing, description, tags, params, duration, origin }) => ({ name, kind, timing, description, tags, params, duration, origin })),
+        notes: cat.notes,
+        assets: assets.map((a) => ({ kind: a.kind, name: a.name, file: rel(a.file), size: a.size, duration: a.duration })),
+        folders: ASSET_FOLDERS, assetsDir: rel(ASSETS_DIR), effectsDir: rel(EFFECTS_DIR),
+      });
+    }
+    if (path === "/api/assets/open" && m === "POST") {
+      ensureAssetsDir();
+      Bun.spawn(process.platform === "win32" ? ["explorer.exe", ASSETS_DIR] : [process.platform === "darwin" ? "open" : "xdg-open", ASSETS_DIR]);
+      return json({ ok: true });
+    }
+    if (path === "/api/assets/upload" && m === "POST") {
+      const kind = q("kind") as AssetKind;
+      if (!(kind in ASSET_FOLDERS)) return fail(`kind must be one of ${Object.keys(ASSET_FOLDERS).join(", ")}`);
+      const name = basename(q("name")).replace(/[<>:"'|?*\x00-\x1f]/g, "_");
+      if (!name || name.startsWith(".")) return fail("Name the file");
+      ensureAssetsDir();
+      const dest = join(ASSETS_DIR, ASSET_FOLDERS[kind], name);
+      const writer = Bun.file(dest).writer();
+      for await (const chunk of req.body!) writer.write(chunk);
+      await writer.end();
+      const added = listAssets().find((a) => a.file === dest);
+      if (!added) {
+        rmSync(dest, { force: true });
+        return fail(`That kind of file can't go in ${ASSET_FOLDERS[kind]}/`);
+      }
+      return json({ kind, name: added.name, file: rel(dest) });
+    }
 
     // ── 5 · Review: your verdict per clip, nudges, comments, finish ──
     const rv = path.match(/^\/api\/takes\/([^/]+)\/(review|finish|comment|clip\/(\d+))$/);

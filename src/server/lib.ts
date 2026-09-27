@@ -70,12 +70,13 @@ export async function run(
  * Duration and frame size from ffmpeg's own header dump (`ffmpeg -i`), so the app ships one binary
  * instead of ffmpeg + ffprobe. ffmpeg exits non-zero without an output file; the header is still printed.
  */
-export async function probeMedia(path: string): Promise<{ duration: number; width: number; height: number }> {
+export async function probeMedia(path: string): Promise<{ duration: number; width: number; height: number; vcodec?: string }> {
   const r = await run(["ffmpeg", "-hide_banner", "-nostdin", "-i", path]);
   const d = r.stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
   if (!d) throw new Error(`ffmpeg couldn't read ${path}: ${r.stderr.trim().split(/\r?\n/).pop()}`);
   const v = r.stderr.match(/Stream #\d+:\d+[^\n]*Video:[^\n]*?\b(\d{2,5})x(\d{2,5})\b/);
-  return { duration: Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]), width: v ? Number(v[1]) : 0, height: v ? Number(v[2]) : 0 };
+  const codec = r.stderr.match(/Stream #\d+:\d+[^\n]*Video: (\w+)/)?.[1];
+  return { duration: Number(d[1]) * 3600 + Number(d[2]) * 60 + Number(d[3]), width: v ? Number(v[1]) : 0, height: v ? Number(v[2]) : 0, ...(codec ? { vcodec: codec } : {}) };
 }
 
 export async function probeDuration(path: string): Promise<number> {

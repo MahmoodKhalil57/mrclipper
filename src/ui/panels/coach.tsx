@@ -1,7 +1,7 @@
 // Phase 6 · Learn: the Coach's proposal for the next outline version, its scorecard, and every version's score.
 import { useState } from "react";
 import { actions } from "../api";
-import { JobCard } from "../Common";
+import { JobCard, UP_TO_DATE } from "../Common";
 import { Bar, LineDiff, ScorecardView, nodeJob, useGuard, type PanelProps } from "./shared";
 
 export function CoachPanel(p: PanelProps) {
@@ -12,6 +12,10 @@ export function CoachPanel(p: PanelProps) {
   const node = p.wf.nodes.coach;
   const pending = o.pending;
   const cur = o.versions.find((v) => v.hash === o.current);
+  // Idempotent: on the same evidence, outline and reference the Coach would say the same again. A new
+  // direction is a new input.
+  const newDirection = !!direction.trim() && direction.trim() !== (o.scorecard?.direction ?? "");
+  const upToDate = node.state === "done" && !newDirection;
   return (
     <div className="stack">
       {pending ? (
@@ -37,7 +41,7 @@ export function CoachPanel(p: PanelProps) {
             <button className="btn" onClick={() => guard(() => actions.discardProposal(pending.id), "Proposal discarded")}>Discard</button>
             <span className="grow" />
             <button className="btn" onClick={() => guard(() => actions.applyProposal(pending.id), "Outline updated")}>✓ Apply</button>
-            <button className="btn primary" onClick={() => guard(async () => { await actions.applyProposal(pending.id); await actions.run(p.video.name, null, undefined, true); }, "Outline updated. ▶ Run is making a new take with it.")}>✓ Apply and make a new take</button>
+            <button className="btn primary" onClick={() => guard(async () => { await actions.applyProposal(pending.id); const r = await actions.run(p.video.name, null); p.toast(r.skipped ?? "Outline updated. ▶ Run is making a new take with it."); })}>✓ Apply and make a new take</button>
           </div>
         </div>
       ) : (
@@ -49,8 +53,9 @@ export function CoachPanel(p: PanelProps) {
           </div>
           <textarea className="field" rows={2} dir="auto" value={direction} onChange={(e) => setDirection(e.target.value)} placeholder="Optional direction, e.g. the endings keep cutting mid-laugh" />
           <div className="row">
-            <span className="hint grow">{node.reason ?? ""}</span>
+            <span className="hint grow">{newDirection ? "A new direction: it can coach again." : upToDate ? "Up to date: no new reviews or checks, and no outline or reference changes, since it last ran. Review a take or give it a new direction to coach again." : node.reason ?? ""}</span>
             {job?.status === "running" ? <button className="btn danger" onClick={() => p.stop(job.id)}>■ Stop</button>
+              : upToDate ? <button className="btn up-to-date" disabled title={UP_TO_DATE}>✓ Up to date</button>
               : <button className="btn primary" disabled={node.state === "locked"} onClick={() => p.step("coach", { video: p.video.name, direction })}>▶ Coach</button>}
           </div>
         </div>

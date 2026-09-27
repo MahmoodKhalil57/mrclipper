@@ -81,7 +81,7 @@ export function ReviewPanel(p: PanelProps) {
                   <Nudge label="Out" value={c.edit && c.edit.enabled !== false ? c.edit.segments[c.edit.segments.length - 1].end : c.end} onChange={(x) => set({ end: x })} />
                   {(r?.nudges ?? 0) > 0 && <div className="hint">Nudged {r!.nudges}×. ▶ Run re-renders this clip.</div>}
                 </div>
-                {c.edit && <EditTimeline edit={c.edit} onToggle={(on) => set({ edit_enabled: on })} />}
+                {c.edit && <EditTimeline edit={c.edit} timeline={c.timeline} onToggle={(on) => set({ edit_enabled: on })} />}
               </>
             )}
             <Thread compact comments={r?.comments ?? []} placeholder="What works, what doesn't…"

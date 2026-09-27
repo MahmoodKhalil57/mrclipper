@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { actions, fileUrl, type Note, type Segment } from "../api";
 import { JobCard } from "../Common";
 import { tc, tcms } from "../util";
-import { KIND_LABEL, cropSafe, nodeJob, useShots, type PanelProps } from "./shared";
+import { KIND_LABEL, StepTrigger, cropSafe, nodeJob, useShots, type PanelProps } from "./shared";
 
 export function TranscriptPanel(p: PanelProps) {
   const [segs, setSegs] = useState<Segment[]>([]);
@@ -195,7 +195,7 @@ export function RefStylePanel(p: PanelProps) {
           <div className="hint">{a ? `${a.model.split("/").pop()} · $${a.cost.toFixed(3)}${node.state === "stale" ? " · the copy guide changed since" : ""}` : "Whisper on the audio, cuts measured with ffmpeg, faces locally, then one multimodal call that watches and listens. About $0.01."}</div>
         </div>
         {job?.status === "running" ? <button className="btn danger" onClick={() => p.stop(job.id)}>■ Stop</button>
-          : <button className="btn primary" onClick={() => p.step("refstyle")}>{a ? "↻ Re-analyse" : "▶ Analyse"}</button>}
+          : <StepTrigger p={p} id="refstyle" first="Analyse" again="Re-analyse" />}
       </div>
       {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}
       {a && (

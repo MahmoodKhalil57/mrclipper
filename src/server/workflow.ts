@@ -11,15 +11,22 @@
 // jobs are running: empty/optional (an input you haven't given), locked (waiting on an earlier node),
 // ready, running, done, stale (an input changed since it was made; Run redoes it), waiting (your turn),
 // failed or stopped. ▶ Run does every step that isn't done, in order, and stops at Review.
+//
+// Steps are idempotent: each output records fingerprints of the inputs it was made from, and a step is
+// done while they still match. A done step won't run again (stepUpToDate says why), because it would
+// give the same result; changing one of its inputs is what makes it run.
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, parse } from "node:path";
 import { startBrief, startCheck, startCoach, startDesign, startPick, startRefStyle, startRender, startTranscript } from "./actions";
 import { briefInputs, readBrief } from "./agents/brief";
 import { checkStatus, readCheck } from "./agents/check";
+import { coachInputs } from "./agents/coach";
+import { designInputs } from "./agents/design";
 import { outlineState } from "./agents/outlines";
 import { pendingGuide, readReference } from "./agents/reference";
 import { renderStatus } from "./agents/render";
-import { readTakeInfo } from "./agents/take";
+import { hashText } from "./agents/text";
+import { pickInputs, readPickSettings, readTakeInfo, savePickSettings, takeSettings, type PickSettings, type TakeInfo } from "./agents/take";
 import { readVision } from "./agents/vision";
 import { cancelJob, getJob, listJobs, startJob, waitForJob, type Job, type JobContext } from "./jobs";
 import { OUTLINE_FILE, listRuns, readSetting, readText, readTranscript, resolveVideo, runDir } from "./library";
@@ -29,15 +36,48 @@ export type NodeId = "source" | "outline" | "refclip" | "guide" | "transcript" |
 export type NodeState = "empty" | "optional" | "locked" | "ready" | "stale" | "running" | "waiting" | "done" | "failed" | "stopped";
 export type Who = "you" | "transcriber" | "llm" | "jev" | "code";
 export type WfNode = { id: NodeId; phase: number; who: Who; state: NodeState; reason?: string; facts: [string, string][]; job?: string; cost?: number };
-export type TakeRef = { id: string; created: string; current: boolean; reviewed: boolean; score: number | null; clips: number };
+export type TakeRef = {
+  id: string; created: string; current: boolean; reviewed: boolean; score: number | null; clips: number;
+  /** The Pick settings it was made with, and whether its other inputs (brief, notes, transcript) are current:
+   *  then saving those settings again brings it back rather than making a new take. */
+  settings: PickSettings; otherInputsCurrent: boolean;
+};
 export type Workflow = {
   video: string; stem: string;
   take: TakeRef | null; takes: TakeRef[];
+  /** Pick's saved settings: its inputs for the next take. */
+  pick: PickSettings;
   nodes: Record<NodeId, WfNode>;
   plan: NodeId[];
   next: { node: NodeId; text: string };
   run: string | null;
 };
+
+/** What changed since a take was made, or null if it's current. Fingerprints a take doesn't have
+ *  (older takes) count as unchanged, or as "no notes" and "the settings it recorded". */
+function takeChange(info: TakeInfo | null, brief: string, now: ReturnType<typeof pickInputs>): string | null {
+  if (!info) return "Made before the workflow update";
+  if (info.inputs.brief !== brief) return "Made from an older outline, reference or brief";
+  if ((info.inputs.settings ?? hashText(JSON.stringify(takeSettings(info)))) !== now.settings) return "Pick's direction or clip count changed since";
+  if ((info.inputs.notes ?? hashText("[]")) !== now.notes) return "Your transcript notes changed since";
+  if (info.inputs.transcript && info.inputs.transcript !== now.transcript) return "The transcript changed since";
+  return null;
+}
+
+/** Is the Coach up to date: same outline, reference and evidence as its last run (and no new direction)? */
+function coachChange(video: string, direction?: string): { locked: boolean; change: string | null } {
+  const now = coachInputs(video);
+  if (!now) return { locked: true, change: null };
+  const last = outlineState().scorecard;
+  const dir = direction?.trim();
+  if (dir && dir !== (last?.direction ?? "")) return { locked: false, change: "A new direction" };
+  if (!last) return { locked: false, change: "It hasn't run yet" };
+  if (!last.inputs) return { locked: false, change: null }; // an older scorecard: see the fallback in workflowState
+  if (last.inputs.evidence !== now.evidence) return { locked: false, change: "New reviews or checks since it last ran" };
+  if (last.inputs.outline !== now.outline) return { locked: false, change: "The outline changed since it last ran" };
+  if (last.inputs.reference !== now.reference) return { locked: false, change: "The style reference changed since it last ran" };
+  return { locked: false, change: null };
+}
 
 export const LABEL: Record<NodeId, string> = {
   source: "Source video", outline: "Outline", refclip: "Reference clip", guide: "Copy guide",
@@ -137,28 +177,41 @@ export function workflowState(videoRef: string, takeId?: string | null, self?: s
 
   // ── 4 · Make (the selected take, else the latest) ─────────────
   const runs = listRuns().filter((r) => r.videoStem === stem);
+  const pin = pickInputs(videoPath);
   const takeOf = (r: (typeof runs)[number]): TakeRef => {
     const info = readTakeInfo(r.id);
+    const ownSettings = info?.inputs.settings ?? hashText(JSON.stringify(takeSettings(info)));
     return {
-      id: r.id, created: r.created, current: !!info && info.inputs.brief === bin.hash,
-      reviewed: readReview(r.id).approved, score: os.outcomes[r.id]?.score ?? null, clips: r.clips.length,
+      id: r.id, created: r.created, current: !takeChange(info, bin.hash, pin),
+      reviewed: readReview(r.id).approved, score: os.outcomes[r.id]?.score ?? null, clips: r.clips.length, settings: takeSettings(info),
+      otherInputsCurrent: !takeChange(info, bin.hash, { ...pin, settings: ownSettings }),
     };
   };
   const takes = runs.map(takeOf);
-  const take = takes.find((t) => t.id === takeId) ?? takes[0] ?? null;
+  // The take asked for; else the latest one made from the current inputs (so going back to earlier inputs
+  // finds the take already made from them, instead of making it again); else the latest.
+  const take = takes.find((t) => t.id === takeId) ?? takes.find((t) => t.current) ?? takes[0] ?? null;
   const tr = take ? runs.find((r) => r.id === take.id)! : null;
   const onTake = (j: Job) => !!take && j.input.run === take.id;
   const jev = tr?.jev;
   N.pick = withJob(node("pick", 4, "jev",
     !segs ? "locked" : !take ? "ready" : take.current ? "done" : "stale",
     take ? [["Clips", String(take.clips)], ["Decisions", jev?.stats ? String(jev.stats.calls) : "–"], ["Take", `${takes.length - takes.indexOf(take)} of ${takes.length}`]] : [],
-    !segs ? "Needs the transcript" : take && !take.current ? (readTakeInfo(take.id) ? "Made from an older outline, reference or brief: Run makes a new take" : "Made before the workflow update: Run makes a new take") : undefined,
+    !segs ? "Needs the transcript" : take && !take.current ? `${takeChange(readTakeInfo(take.id), bin.hash, pin)}: Run makes a new take` : undefined,
   ), jobFor("pick", onVideo), take ? readTakeInfo(take.id)?.created ?? Date.now() : 0);
 
   let dState: NodeState = "locked";
   const design = tr ? readJson(join(runDir(tr.id), "design.json")) : null;
   const created = take ? readTakeInfo(take.id)?.created ?? 0 : 0;
-  if (take) dState = design && design.at >= created ? "done" : "ready";
+  // Designed from the take, the planner's version, your effects/ and your assets/: a change to any is a redesign.
+  const din = designInputs();
+  const designReason = !design || design.at < created ? undefined
+    : !design.inputs || design.inputs.version < din.version ? "Designed before the effects library: Run plans it again with effects"
+    : design.inputs.effects !== din.effects ? "Your effects/ folder changed since"
+    : design.inputs.assets !== din.assets ? "Files in assets/ changed since" : undefined;
+  if (take) dState = !design || design.at < created ? "ready" : designReason ? "stale" : "done";
+  const planned = Object.values<any>(design?.clips ?? {}).filter((c) => c.mode === "concepts").length;
+  const fxCount = tr ? tr.clips.reduce((n, c) => n + (c.edit?.fx?.length ?? 0), 0) : 0;
   const moves: Record<string, number> = {};
   for (const c of Object.values<any>(design?.clips ?? {})) {
     for (const z of c.zooms ?? []) moves[z.zoom] = (moves[z.zoom] ?? 0) + 1;
@@ -166,10 +219,11 @@ export function workflowState(videoRef: string, takeId?: string | null, self?: s
   }
   const topMoves = Object.entries(moves).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([k, n]) => `${k.replace(/_/g, " ")} ×${n}`).join(", ");
   N.design = withJob(node("design", 4, "jev", dState, design ? [
-    ["Choices", String(Object.values<any>(design.clips ?? {}).reduce((n, c) => n + (c.zooms?.length ?? 0) + (c.transitions?.length ?? 0) + (c.hook ? 1 : 0), 0))],
-    ["Moves", topMoves || "–"],
+    ...(planned
+      ? [["Plans", `${planned}/${tr?.clips.length ?? planned} clips, Jev picked`], ["Effects", String(fxCount)]] as [string, string][]
+      : [["Choices", String(Object.values<any>(design.clips ?? {}).reduce((n, c) => n + (c.zooms?.length ?? 0) + (c.transitions?.length ?? 0) + (c.hook ? 1 : 0), 0))], ["Moves", topMoves || "–"]] as [string, string][]),
     ["Hook cards", String(Object.values<any>(design.clips ?? {}).filter((c) => c.hook).length)],
-  ] : [], !take ? "Needs a take" : undefined), jobFor("design", onTake), design?.at ?? 0);
+  ] : [], !take ? "Needs a take" : designReason), jobFor("design", onTake), design?.at ?? 0);
 
   const rs = take ? renderStatus(take.id) : null;
   N.render = withJob(node("render", 4, "code",
@@ -207,14 +261,17 @@ export function workflowState(videoRef: string, takeId?: string | null, self?: s
 
   // ── 6 · Learn ─────────────────────────────────────────────────
   const reviewed = listRuns().map((r) => ({ r, rv: readReview(r.id) })).filter((x) => x.rv.approved);
+  const cc = coachChange(video);
+  // A scorecard from before the Coach recorded its inputs: new reviews since then are what counts.
   const fresh = reviewed.filter((x) => (x.rv.approvedAt ?? 0) > os.lastCoach).length + (a && a.at > os.lastCoach ? 1 : 0);
+  const coachReason = cc.change ?? (os.scorecard && !os.scorecard.inputs && fresh ? "New reviews since it last ran" : null);
   N.coach = withJob(node("coach", 6, "jev",
-    os.pending ? "waiting" : !reviewed.length && !a ? "locked" : fresh ? "ready" : "done",
+    os.pending ? "waiting" : cc.locked ? "locked" : coachReason ? "ready" : "done",
     [
       ["Evidence", `${reviewed.length} reviewed take${reviewed.length === 1 ? "" : "s"}${a ? " + reference" : ""}`],
       ...(os.pending ? [["Proposal", `${os.pending.changes.length} change${os.pending.changes.length === 1 ? "" : "s"}`] as [string, string]] : []),
     ],
-    os.pending ? "Apply or discard its proposal" : !reviewed.length && !a ? "Review a take (or add a style reference) first" : fresh ? "New reviews since it last ran" : undefined,
+    os.pending ? "Apply or discard its proposal" : cc.locked ? "Review a take (or add a style reference) first" : coachReason ?? undefined,
   ), jobFor("coach", () => true), os.lastCoach);
 
   // ── What ▶ Run does ───────────────────────────────────────────
@@ -250,9 +307,31 @@ export function workflowState(videoRef: string, takeId?: string | null, self?: s
           ? { node: "review", text: "Your turn: keep or drop each clip, nudge edges, comment, then finish the review." }
           : N.coach.state === "waiting"
             ? { node: "coach", text: "The coach proposed a revised outline: apply it or discard it." }
-            : { node: "pick", text: "Everything is up to date. Start a new take from Pick clips, or change an input." };
+            : { node: "pick", text: "Everything is up to date. To make another take, change an input: Pick's direction or clip count, your notes, or the outline." };
 
-  return { video, stem, take, takes, nodes: N, plan, next, run: running };
+  return { video, stem, take, takes, pick: readPickSettings(videoPath), nodes: N, plan, next, run: running };
+}
+
+/** Why running `step` now would change nothing (it's up to date with its inputs), or null if it can run.
+ *  The API and the Director's tools both check this, so a step never reruns on unchanged inputs. */
+export function stepUpToDate(step: NodeId, video: string | undefined, take: string | null, opts: { direction?: string } = {}): string | null {
+  if (!video) {
+    // The style reference belongs to no video in particular.
+    const ref = readReference();
+    return step === "refstyle" && ref?.analysis && ref.analysis.guide === ref.guide
+      ? "Reference style is up to date: the reference clip and the copy guide haven't changed since it ran."
+      : null;
+  }
+  const w = workflowState(video, take);
+  const n = w.nodes[step];
+  if (step === "coach") {
+    const cc = coachChange(w.video, opts.direction);
+    if (cc.change === "A new direction") return null;
+    if (n.state === "waiting" && !cc.change) return "The Coach is up to date: its proposal is waiting for you to apply or discard.";
+  }
+  return n?.state === "done"
+    ? `${LABEL[step]} is up to date: none of its inputs changed since it ran, so it would give the same result. Change one of them to run it again.`
+    : null;
 }
 
 // ── ▶ Run ────────────────────────────────────────────────────────
@@ -270,12 +349,12 @@ async function follow(job: Job, ctx: JobContext) {
   }
 }
 
-function startStep(step: NodeId, video: string, take: string | null, opts: { notes?: string; count?: number }): Job {
+function startStep(step: NodeId, video: string, take: string | null): Job {
   switch (step) {
     case "transcript": return startTranscript(video);
     case "refstyle": return startRefStyle();
     case "brief": return startBrief(video);
-    case "pick": return startPick({ video, notes: opts.notes, count: opts.count });
+    case "pick": return startPick({ video });
     case "design": return startDesign(take!);
     case "render": return startRender({ run: take! });
     case "check": return startCheck({ run: take! });
@@ -284,15 +363,13 @@ function startStep(step: NodeId, video: string, take: string | null, opts: { not
   }
 }
 
-export async function runWorkflow(ctx: JobContext, videoRef: string, opts: { take?: string; notes?: string; count?: number; fresh?: boolean }) {
+export async function runWorkflow(ctx: JobContext, videoRef: string, opts: { take?: string }) {
   const video = basename(resolveVideo(videoRef));
   const first = workflowState(video, opts.take ?? null, ctx.job.id);
   // The take the canvas shows: the one asked for, else the latest. Pick replaces it with the new take.
   let take = first.take?.id ?? null;
-  // fresh: always make a new take (after whatever Understand/Brief steps are due).
-  const steps = opts.fresh && !first.plan.includes("pick")
-    ? [...first.plan.filter((s) => !["design", "render", "check", "coach"].includes(s)), "pick", "design", "render", "check"] as NodeId[]
-    : first.plan;
+  // Only what isn't up to date: a new take happens when one of Pick's inputs changed (see takeChange).
+  const steps = first.plan;
   if (!steps.length) {
     ctx.log(first.next.text);
     return { steps, take, next: first.next };
@@ -302,7 +379,7 @@ export async function runWorkflow(ctx: JobContext, videoRef: string, opts: { tak
   let total = 0;
   for (const [i, step] of steps.entries()) {
     ctx.progress(i / steps.length, `${LABEL[step]} (${i + 1}/${steps.length})`);
-    const end = await follow(startStep(step, video, take, opts), ctx);
+    const end = await follow(startStep(step, video, take), ctx);
     if (end.status !== "done") throw new Error(`${LABEL[step]} ${end.status === "cancelled" ? "was stopped" : `failed: ${end.error}`}`);
     if (step === "pick") take = (end.result as { run: string }).run;
     total += end.cost ?? 0;
@@ -315,11 +392,18 @@ export async function runWorkflow(ctx: JobContext, videoRef: string, opts: { tak
   return { steps, take, next: after.next };
 }
 
-export function startWorkflow(args: { video: string; take?: string; notes?: string; count?: number; fresh?: boolean }): Job {
-  const video = basename(resolveVideo(args.video));
+/** ▶ Run. A direction or clip count given here is saved as Pick's settings first (so they're Pick's inputs:
+ *  if they differ from the current take's, the take is out of date and Run makes a new one). When every
+ *  step is up to date there's nothing to run, and it says so instead of starting a job. */
+export function startWorkflow(args: { video: string; take?: string; direction?: string; count?: number | null }): Job | { skipped: string } {
+  const path = resolveVideo(args.video);
+  const video = basename(path);
   const running = listJobs().find((j) => j.agent === "workflow" && j.status === "running" && j.input.video === video);
   if (running) return running;
-  const input = { video, ...(args.take ? { take: args.take } : {}), ...(args.notes?.trim() ? { notes: args.notes.trim() } : {}), ...(args.count ? { count: args.count } : {}), ...(args.fresh ? { fresh: true } : {}) };
+  if (args.direction !== undefined || args.count !== undefined) savePickSettings(path, { direction: args.direction, count: args.count });
+  const w = workflowState(video, args.take ?? null);
+  if (!w.plan.length) return { skipped: w.next.text };
+  const input = { video, ...(args.take ? { take: args.take } : {}) };
   return startJob("workflow", `Run the workflow for ${video}`, input, (ctx) => runWorkflow(ctx, video, input));
 }
 

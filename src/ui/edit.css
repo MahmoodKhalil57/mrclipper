@@ -31,3 +31,61 @@
 .outline-rows b { font-weight: 500; color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wire.config .react-flow__edge-path { stroke: var(--ink-2); stroke-dasharray: 2 5; opacity: 0.6; }
 .wire.config.flowing .react-flow__edge-path { opacity: 1; stroke-dasharray: 5 5; }
+
+/* Effects on the clip's timeline: one lane each for picture, text and sound, like an editor's tracks. */
+.edl-seg i.edl-time { color: var(--warn); }
+.fx-lanes { display: grid; gap: 3px; margin-top: 2px; }
+.fx-lane { display: grid; grid-template-columns: 48px 1fr; gap: 6px; align-items: start; }
+.fx-lane-name { font: 9.5px/17px var(--mono); color: var(--faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.fx-lane-track {
+  position: relative; border-radius: 4px; overflow: hidden;
+  background: repeating-linear-gradient(90deg, transparent 0 calc(10% - 1px), color-mix(in oklab, var(--line) 60%, transparent) calc(10% - 1px) 10%), var(--panel);
+  border: 1px solid var(--line);
+}
+.fx-tick { position: absolute; top: 0; bottom: 0; width: 1px; background: color-mix(in oklab, var(--extract) 55%, transparent); }
+.fx-mark {
+  --k: var(--muted);
+  position: absolute; height: 14px; border-radius: 3px; min-width: 7px; box-sizing: border-box; overflow: hidden;
+  background: color-mix(in oklab, var(--k) 30%, var(--panel)); border: 1px solid color-mix(in oklab, var(--k) 70%, transparent);
+  display: flex; align-items: center; padding: 0 4px; cursor: default;
+  transition: filter 0.15s, transform 0.15s;
+}
+.fx-mark:hover { filter: brightness(1.35); z-index: 2; overflow: visible; }
+.fx-mark em { font: normal 9.5px/1 var(--sans); color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fx-mark:hover em { overflow: visible; background: color-mix(in oklab, var(--k) 30%, var(--panel)); padding-right: 4px; }
+.fx-mark.hit { border-radius: 7px; background: var(--k); }
+.fx-mark.hit em { color: #140f0a; font-weight: 600; }
+.fx-mark.k-video { --k: var(--extract); }
+.fx-mark.k-graphic { --k: var(--transcribe); }
+.fx-mark.k-asset { --k: var(--plan); }
+.fx-mark.k-text { --k: var(--who-llm, #7fb4ff); }
+.fx-mark.k-sound { --k: var(--who-jev, #b9a7ff); }
+.fx-mark.k-voice { --k: #f08ab8; }
+.fx-mark.k-music { --k: var(--ok); }
+.fx-scale { display: flex; justify-content: space-between; padding-left: 54px; font: 9px var(--mono); color: var(--faint); }
+
+/* Design: the LLM's plans side by side, Jev's pick highlighted. */
+.concepts { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 8px; }
+.concept {
+  display: grid; gap: 6px; align-content: start; padding: 9px 10px; border-radius: 8px; background: var(--bg);
+  border: 1px solid var(--line); font-size: 12px; color: var(--ink-2);
+}
+.concept.on { border-color: color-mix(in oklab, var(--who-jev, #b9a7ff) 65%, var(--line)); background: color-mix(in oklab, var(--who-jev, #b9a7ff) 7%, var(--bg)); box-shadow: 0 0 0 1px color-mix(in oklab, var(--who-jev, #b9a7ff) 25%, transparent); }
+.concept.broken { opacity: 0.6; }
+.concept b { font: italic 16px/1.1 var(--serif); color: var(--ink); font-weight: 400; }
+.concept-key { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; background: var(--panel-2); color: var(--muted); font-size: 10px; }
+.concept.on .concept-key { background: var(--who-jev, #b9a7ff); color: #17131f; }
+.concept-idea { line-height: 1.45; }
+.concept details summary { cursor: pointer; font-size: 11px; color: var(--muted); }
+.concept-plan { margin: 4px 0 0; padding-left: 16px; display: grid; gap: 2px; font: 10.5px/1.45 var(--mono); color: var(--ink-2); }
+
+/* The effects library and your files. */
+.lib-card .field { max-width: 100%; }
+.asset-groups { display: grid; gap: 6px; }
+.asset-group { display: grid; grid-template-columns: 120px 1fr; gap: 8px; align-items: baseline; }
+.asset-group a { text-decoration: none; }
+.fx-group { display: grid; gap: 4px; margin-top: 10px; }
+.fx-item { display: grid; grid-template-columns: auto auto 1fr; gap: 3px 8px; align-items: baseline; padding: 5px 0; border-bottom: 1px dashed var(--line); font-size: 12px; }
+.fx-item b { color: var(--ink); font-size: 11px; }
+.fx-desc { grid-column: 1 / -1; color: var(--ink-2); line-height: 1.4; }
+.fx-params { grid-column: 1 / -1; font-size: 9.5px; color: var(--faint); }

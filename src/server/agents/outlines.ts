@@ -11,6 +11,7 @@ import { CLIPS_DIR, OUTLINE_FILE, listRuns, readClipData, readText, readTranscri
 import { readReview } from "../review";
 import { readCheck } from "./check";
 import { readReference } from "./reference";
+import { gapOf } from "../effects/timeline";
 import { clipStr, hashText } from "./text";
 import { readWatch, watchSummary } from "./watch";
 
@@ -28,8 +29,12 @@ export type Proposal = {
   hypothesis: string; keep: string; warnings: string[];
   takes: string[]; direction?: string; model: string; cost: number; scorecard?: string;
 };
+/** Fingerprints of what the Coach reads: the outline, the style reference, and its evidence (see coach.ts). */
+export type CoachInputs = { outline: string; reference: string; evidence: string };
 export type Scorecard = {
   id: string; at: number; outline_hash: string; cost: number; calls: number; diagnosis: string;
+  /** What it learned from, and the direction it was given (missing on scorecards from before they were tracked). */
+  inputs?: CoachInputs; direction?: string;
   /** Per check rule: how often the reviewed clips follow it, and on clips you kept vs dropped. */
   rules: { key: string; section: string; rule: string; followed: number; good: number | null; bad: number | null; n: number }[];
   decisions: { section: string; chosen: string; summary: string; p: number; options: Record<string, number>; applied: boolean }[];
@@ -223,7 +228,8 @@ export function takeEvidence(r: Run, o: TakeOutcome, label: (h: string | null) =
     out.push(
       `- Clip ${c.id} "${clipStr(c.title, 60)}" ${(c.end - c.start).toFixed(0)}s: ${status}${v?.nudges ? `, edges nudged ${v.nudges}x` : ""}` +
         `${cc ? `, follows ${Math.round(cc.followed * 100)}% of the check rules${low.length ? ` (misses: ${low.slice(0, 3).join("; ")})` : ""}` : ""}` +
-        `${moves ? `, moves ${moves}${c.edit?.transitions?.length ? ` via ${c.edit.transitions.join("/")}` : ""}` : ""}`,
+        `${moves ? `, moves ${moves}${c.edit?.transitions?.length ? ` via ${c.edit.transitions.map((g) => gapOf(g).fx).join("/")}` : ""}` : ""}` +
+        `${c.edit?.fx?.length ? `, effects ${[...new Set(c.edit.fx.map((f) => f.fx))].join("/")}` : ""}`,
       `  opens "${line(c.edit?.segments?.[0]?.start ?? c.start, true)}" · ends "${line(c.edit?.segments?.at(-1)?.end ?? c.end, false)}"`,
       ...(c.file && readWatch(r.id, c.id) ? [`  finished clip: ${watchSummary(readWatch(r.id, c.id))}`] : []),
       ...(v?.comments ?? []).filter((x) => x.by !== "agent").map((x) => `  your comment: "${clipStr(x.text, 240)}"`),

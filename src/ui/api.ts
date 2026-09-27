@@ -28,10 +28,18 @@ export type NodeId = "source" | "outline" | "refclip" | "guide" | "transcript" |
 export type NodeState = "empty" | "optional" | "locked" | "ready" | "stale" | "running" | "waiting" | "done" | "failed" | "stopped";
 export type Who = "you" | "transcriber" | "llm" | "jev" | "code";
 export type WfNode = { id: NodeId; phase: number; who: Who; state: NodeState; reason?: string; facts: [string, string][]; job?: string; cost?: number };
-export type TakeRef = { id: string; created: string; current: boolean; reviewed: boolean; score: number | null; clips: number };
+/** Pick's settings: its inputs for a take, besides the brief, your notes and the transcript. */
+export type PickSettings = { direction: string; count: number | null };
+export type TakeRef = {
+  id: string; created: string; current: boolean; reviewed: boolean; score: number | null; clips: number;
+  /** The Pick settings it was made with, and whether its other inputs (brief, notes, transcript) are current. */
+  settings: PickSettings; otherInputsCurrent: boolean;
+};
 export type Workflow = {
   video: string; stem: string;
   take: TakeRef | null; takes: TakeRef[];
+  /** Pick's saved settings for the next take. */
+  pick: PickSettings;
   nodes: Record<NodeId, WfNode>;
   plan: NodeId[];
   next: { node: NodeId; text: string };
@@ -48,8 +56,17 @@ export type Review = {
   comments: Comment[];
   clips: Record<string, { status?: "keep" | "drop"; comments: Comment[]; nudges?: number; rating?: 1 | -1 }>;
 };
-export type EditSegment = { start: number; end: number; role?: string; zoom?: string; speed?: number; reframe_x?: number; look?: string };
-export type ClipEdit = { segments: EditSegment[]; transitions: string[]; title?: string; emphasis?: string[]; enabled?: boolean };
+/** An effect as an edit uses it; times are anchors (seconds, "start", "p2", "cut1", "p2@123.4"…). */
+export type FxUse = { fx: string; at?: number | string; from?: number | string; to?: number | string; duration?: number; params?: Record<string, unknown> };
+export type EditSegment = { start: number; end: number; role?: string; zoom?: string; speed?: number; reframe_x?: number; look?: string; fx?: FxUse[]; freeze?: number; reverse?: boolean };
+export type Gap = string | { fx: string; duration?: number; params?: Record<string, unknown> };
+export type ClipEdit = { segments: EditSegment[]; transitions: Gap[]; title?: string; emphasis?: string[]; enabled?: boolean; fx?: FxUse[]; concept?: { name: string; idea: string } };
+export type FxKind = "segment" | "video" | "graphic" | "text" | "asset" | "transition" | "sound" | "voice" | "music";
+/** Where a clip's parts, joins and effects play in the finished clip (seconds). */
+export type ClipTimeline = {
+  duration: number; parts: { t0: number; t1: number }[]; joins: { t: number; overlap: number; name: string }[];
+  fx: { fx: string; kind: FxKind; t0: number; t1: number; label?: string }[];
+};
 export type WatchFrame = {
   t: number; frame: string; faces: number; face_cut: boolean;
   desc?: string; framing?: "good" | "cut_off" | "empty" | "split" | "fit"; captions?: string; caption_ok?: boolean; effect?: string;
@@ -60,7 +77,7 @@ export type ClipWatch = {
   frames: WatchFrame[];
   metrics: { script_match: number | null; faces_ok: number | null; cut_off: number; captions_ok: number | null; framing_ok: number | null };
 };
-export type Clip = { id: number; title: string; start: number; end: number; on_screen_text?: string; reason?: string; file: string | null; edit?: ClipEdit; watch?: ClipWatch | null };
+export type Clip = { id: number; title: string; start: number; end: number; on_screen_text?: string; reason?: string; file: string | null; edit?: ClipEdit; timeline?: ClipTimeline | null; watch?: ClipWatch | null };
 
 export type BriefQuestion = { key: string; label: string; type: "noul" | "score"; instructions: string; criteria?: string[]; weight: number };
 export type CheckRule = { key: string; section: string; rule: string; question: string };
@@ -82,15 +99,29 @@ export type PickRun = {
   brief?: Brief | Record<string, unknown>;
   alternatives: { start: number; end: number; overall: number; tone: string; opening: string }[];
 };
+export type DesignConcept = { key: string; name: string; idea: string; p: number; chosen: boolean; ok: boolean; plan: string[]; notes: string[] };
 export type DesignRun = {
   at: number; cost: number; guide?: "llm" | "standard";
+  inputs?: { version: number; effects: string; assets: string };
   clips: Record<string, {
     zooms: { piece: number; zoom: string; p: number; options: Record<string, number>; flashback?: number; varied?: boolean; ending?: boolean; ending_p?: number }[];
     transitions: { gap: number; transition: string; p: number; options: Record<string, number> }[];
     hook?: { chosen: string; p: number; options: Record<string, number>; texts: Record<string, string> };
     emphasis?: { w: string; p: number; kept: boolean }[];
+    /** concepts: the LLM planned two edits and Jev picked one; moves: Jev picked a move per part. */
+    mode?: "concepts" | "moves";
+    concepts?: DesignConcept[];
   }>;
 };
+export type ParamSpec =
+  | { type: "number"; min: number; max: number; default: number; doc?: string }
+  | { type: "color"; default: string; doc?: string }
+  | { type: "enum"; values: string[]; default: string; doc?: string }
+  | { type: "text"; default?: string; max?: number; doc?: string }
+  | { type: "asset"; kinds: string[]; doc?: string };
+export type EffectInfo = { name: string; kind: FxKind; timing: "whole" | "range" | "instant"; description: string; tags: string[]; params?: Record<string, ParamSpec>; duration?: number; origin?: "builtin" | "workspace" };
+export type AssetInfo = { kind: "sfx" | "music" | "overlay" | "image" | "lut" | "font"; name: string; file: string; size: number; duration?: number };
+export type EffectsLibrary = { effects: EffectInfo[]; notes: string[]; assets: AssetInfo[]; folders: Record<AssetInfo["kind"], string>; assetsDir: string; effectsDir: string };
 export type EdgeCheck = {
   start: number; end: number; start_clean: number; end_clean: number; standalone: number;
   suggest_start?: { t: number; p: number; line: string }; suggest_end?: { t: number; p: number; line: string };
@@ -124,6 +155,8 @@ export type Scorecard = {
   rules: { key: string; section: string; rule: string; followed: number; good: number | null; bad: number | null; n: number }[];
   decisions: { section: string; chosen: string; summary: string; p: number; options: Record<string, number>; applied: boolean }[];
   proposal?: string;
+  /** The direction it was given, if any. */
+  direction?: string;
 };
 export type OutlineState = {
   current: string; versions: OutlineVersion[];
@@ -193,13 +226,16 @@ export async function putText(url: string, body: string) {
 }
 
 const T = (take: string) => `/api/takes/${encodeURIComponent(take)}`;
-export type StepArgs = { video?: string; take?: string; notes?: string; count?: number; only?: number[]; force?: boolean; direction?: string };
+export type StepArgs = { video?: string; take?: string; count?: number | null; only?: number[]; direction?: string };
+/** A started job, or why nothing ran: the step (or every step) is up to date with its inputs. */
+export type Started = { job_id: string; skipped?: undefined } | { skipped: string; job_id?: undefined };
 
 export const actions = {
   // The workflow
   workflow: (video: string, take?: string | null) => getJSON<Workflow>(`/api/workflow?video=${encodeURIComponent(video)}${take ? `&take=${encodeURIComponent(take)}` : ""}`),
-  run: (video: string, take?: string | null, notes?: string, fresh = false) => call<{ job_id: string }>("/api/run", "POST", { video, take: take ?? undefined, notes, fresh }),
-  step: (step: NodeId, args: StepArgs) => call<{ job_id: string }>("/api/step", "POST", { step, ...args }),
+  run: (video: string, take?: string | null) => call<Started>("/api/run", "POST", { video, take: take ?? undefined }),
+  step: (step: NodeId, args: StepArgs) => call<Started>("/api/step", "POST", { step, ...args }),
+  pickSettings: (video: string, s: Partial<PickSettings>) => call<PickSettings>("/api/pick", "PUT", { video, ...s }),
   cancel: (id: string) => call(`/api/jobs/${id}/cancel`),
   // Inputs
   importUrl: (url: string) => call<{ job_id: string }>("/api/import", "POST", { url }),
@@ -213,6 +249,9 @@ export const actions = {
   unnote: (video: string, id: string) => call(`/api/notes?video=${encodeURIComponent(video)}&id=${id}`, "DELETE"),
   // Brief
   briefOf: (video: string) => getJSON<BriefFile | null>(`/api/brief?video=${encodeURIComponent(video)}`),
+  // Design: the effects library and your files
+  effects: () => getJSON<EffectsLibrary>("/api/effects"),
+  openAssets: () => call("/api/assets/open"),
   // Review
   clip: (take: string, id: number, patch: { status?: "keep" | "drop" | null; start?: number; end?: number; title?: string; edit_enabled?: boolean }) => call(`${T(take)}/clip/${id}`, "POST", patch),
   finish: (take: string, done = true) => call(`${T(take)}/finish`, "POST", { done }),
@@ -232,7 +271,7 @@ export const actions = {
 export function uploadVideo(file: File, onProgress: (p: number) => void, endpoint = "/api/upload"): Promise<{ video: string }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `${endpoint}?name=${encodeURIComponent(file.name)}`);
+    xhr.open("POST", `${endpoint}${endpoint.includes("?") ? "&" : "?"}name=${encodeURIComponent(file.name)}`);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onload = () => {
       const data = JSON.parse(xhr.responseText || "{}");

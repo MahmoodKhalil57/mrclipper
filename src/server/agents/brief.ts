@@ -3,7 +3,9 @@
 //            with weights, tone categories and safety gates
 //   design   when each allowed camera move and transition fits, and how hook cards should read
 //   check    the rules Jev rates every finished clip on (outline rules + the style reference's traits)
-// It reads the outline, the style reference and its copy guide, your notes and a transcript sample.
+// It reads the outline, the style reference and its copy guide, and a sample of the video's transcript:
+// what its cache key covers (the video stands for its transcript, whose text doesn't change once made).
+// Your reviews reach it through the Coach, as outline changes, so a review doesn't change the brief.
 // Cached per video in transcripts/<video>/brief.json and rewritten only when the outline or the
 // reference changes, so re-running the workflow costs no LLM call. If the LLM fails, a built-in
 // brief takes over: the workflow never stops on it.
@@ -13,7 +15,6 @@ import { MODELS, WRITER } from "../config";
 import type { JobContext } from "../jobs";
 import { extractJson, openrouter } from "../lib";
 import { OUTLINE_FILE, readText, readTranscript, transcriptDir } from "../library";
-import { feedbackDigest } from "../review";
 import { readEditStyle, type EditStyle, type Transition, type Zoom } from "./edit";
 import { readReference, referenceText, type Reference } from "./reference";
 import { audienceSummary, clipStr, hashText, sectionsOf } from "./text";
@@ -160,7 +161,7 @@ function cleanQuestions(raw: any, allowScore: boolean, min: number, max: number,
   return out.length >= min ? out : null;
 }
 
-const PROMPT = (p: { outline: string; feedback: string; sample: string; zooms: string[]; transitions: string[]; reference: string }) =>
+const PROMPT = (p: { outline: string; sample: string; zooms: string[]; transitions: string[]; reference: string }) =>
   `You configure TypeSafe's Jev for a short-form clipping pipeline. Jev is a decision model that cannot write text: it answers typed
 questions about a piece of text ("noul" = probability a proposition is true; "score" = level on an ordered scale; "choice" = pick
 one of named options). Jev will answer your questions for every candidate opening line, closing line and clip of a video, choose
@@ -169,9 +170,6 @@ camera moves and transitions, pick hook cards, and check every finished clip aga
 # Outline
 ${p.outline}
 ${p.reference ? `\n# Style reference: the editor wants the clips to copy this, as far as the copy guide says\n${p.reference}\n` : ""}
-# The editor's notes and reviews so far
-${p.feedback || "None."}
-
 # A sample of the transcript (for language and content, not for choosing)
 ${p.sample}
 
@@ -223,7 +221,7 @@ export async function compileBrief(ctx: JobContext, video: string): Promise<{ br
   let cost = 0;
   try {
     const res = await openrouter(
-      { temperature: 0.3, ...WRITER, messages: [{ role: "user", content: PROMPT({ outline, feedback: clipStr(feedbackDigest(video), 1500), sample: clipStr(sample, 3000), zooms, transitions, reference }) }] },
+      { temperature: 0.3, ...WRITER, messages: [{ role: "user", content: PROMPT({ outline, sample: clipStr(sample, 3000), zooms, transitions, reference }) }] },
       MODELS.plan, ctx.signal,
     );
     ctx.addCost(res.usage?.cost);

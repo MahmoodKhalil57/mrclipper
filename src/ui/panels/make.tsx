@@ -1,23 +1,44 @@
 // Phase 4 · Make, one take at a time: Pick clips → Design edits → Render → Check.
-import { useState } from "react";
-import { actions, fileUrl, type Clip } from "../api";
-import { JobCard } from "../Common";
+import { useEffect, useState } from "react";
+import { actions, fileUrl, uploadVideo, type AssetInfo, type Clip, type DesignConcept, type EffectInfo, type EffectsLibrary, type FxKind, type Started } from "../api";
+import { JobCard, UP_TO_DATE } from "../Common";
 import { tc } from "../util";
-import { Bar, EdgeQa, EditTimeline, Odds, PickBreakdown, nodeJob, useGuard, type PanelProps } from "./shared";
+import { Bar, EdgeQa, EditTimeline, Odds, PickBreakdown, StepTrigger, gapName, nodeJob, useGuard, type PanelProps } from "./shared";
 
 // ── Pick clips ───────────────────────────────────────────────────────
 
 export function PickPanel(p: PanelProps) {
-  const [direction, setDirection] = useState("");
-  const [count, setCount] = useState("");
+  // Pick's settings are its inputs, saved per video: the take is up to date while they (and the brief,
+  // your notes and the transcript) are what it was picked with.
+  const saved = p.wf.pick;
+  const [direction, setDirection] = useState(saved.direction);
+  const [count, setCount] = useState(saved.count ? String(saved.count) : "");
+  useEffect(() => {
+    setDirection(saved.direction);
+    setCount(saved.count ? String(saved.count) : "");
+  }, [saved.direction, saved.count]);
+  const guard = useGuard(p);
   const job = nodeJob(p, "pick");
   const node = p.wf.nodes.pick;
   const run = p.run;
   const running = job?.status === "running";
+  const draft = { direction: direction.trim(), count: Number(count) > 0 ? Math.min(20, Math.round(Number(count))) : null };
+  const edited = draft.direction !== saved.direction || draft.count !== saved.count;
+  // Idempotent: on the same inputs Pick would pick the same take again, and a take already picked from
+  // the edited settings (with the current brief, notes and transcript) comes back instead of a new one.
+  const upToDate = node.state === "done" && !edited;
+  const reuse = edited ? p.wf.takes.find((t) => t.otherInputsCurrent && t.settings.direction === draft.direction && t.settings.count === draft.count) : undefined;
+  const reuseName = reuse ? `take ${p.wf.takes.length - p.wf.takes.indexOf(reuse)}` : "";
+  const go = (start: () => Promise<Started>, ok: string) =>
+    guard(async () => {
+      if (edited) await actions.pickSettings(p.video.name, draft);
+      const r = await start();
+      p.toast(r.skipped ?? ok);
+    });
   return (
     <div className="stack">
       <div className="card stack-sm">
-        <div className="label">A new take</div>
+        <div className="label">Pick's settings</div>
         <textarea className="field" rows={3} dir="auto" value={direction} onChange={(e) => setDirection(e.target.value)}
           placeholder="Optional direction for Jev, e.g. focus on the buffalo section; more jokes; avoid the intro" />
         <div className="row">
@@ -26,25 +47,42 @@ export function PickPanel(p: PanelProps) {
           <span className="grow" />
           {running ? (
             <button className="btn danger" onClick={() => p.stop(job!.id)}>■ Stop</button>
+          ) : upToDate ? (
+            <button className="btn up-to-date" disabled title={UP_TO_DATE}>✓ Up to date</button>
+          ) : reuse ? (
+            <button className="btn primary" onClick={() => guard(async () => {
+              await actions.pickSettings(p.video.name, draft);
+              p.selectTake(null);
+            }, `Back to ${reuseName}: it was picked with these settings.`)}>↩ Back to {reuseName}</button>
           ) : (
             <>
-              <button className="btn" disabled={node.state === "locked"} onClick={() => p.step("pick", { notes: direction, count: count ? Number(count) : undefined })}>Pick only</button>
-              <button className="btn primary" disabled={node.state === "locked"}
-                onClick={() => actions.run(p.video.name, null, direction, true).then(() => p.toast("Making a new take: pick → design → render → check")).catch((e) => p.toast(e.message, "err"))}>
+              {edited && <button className="btn" onClick={() => guard(() => actions.pickSettings(p.video.name, draft), "Saved. ▶ Run makes a new take with them.")}>Save</button>}
+              <button className="btn" disabled={node.state === "locked"} onClick={() => go(() => actions.step("pick", { video: p.video.name }), "Picking clips")}>Pick only</button>
+              <button className="btn primary" disabled={node.state === "locked"} onClick={() => go(() => actions.run(p.video.name, null), "Making a new take: pick → design → render → check")}>
                 ▶ Make a new take
               </button>
             </>
           )}
         </div>
-        <div className="hint">Jev scores every opening line, closing line and candidate clip with the brief's questions, then the best clips that don't overlap win. It also reads your transcript notes and earlier reviews.</div>
+        <div className="hint">
+          {reuse
+            ? `${reuseName[0].toUpperCase()}${reuseName.slice(1)} was picked with exactly these inputs, so these settings bring it back instead of making a new take.`
+            : edited
+            ? "Changed from what the current take was picked with. A new take uses these."
+            : upToDate
+              ? "The current take was picked with these settings, the current brief, your notes and the transcript, so picking again would give the same take. Change one of them to make another."
+              : node.reason ?? "Jev scores every opening line, closing line and candidate clip with the brief's questions, then the best clips that don't overlap win. It also reads your transcript notes."}
+        </div>
       </div>
       {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}
       <div className="label">Takes of this video</div>
       {p.wf.takes.map((t, i) => {
+        // With nothing selected, the canvas shows the latest take made from the current inputs.
+        const auto = p.wf.takes.find((x) => x.current) ?? p.wf.takes[0];
         const r = p.lib.runs.find((x) => x.id === t.id);
         const on = p.wf.take?.id === t.id;
         return (
-          <button key={t.id} className={`take ${on ? "on" : ""}`} onClick={() => p.selectTake(i === 0 ? null : t.id)}>
+          <button key={t.id} className={`take ${on ? "on" : ""}`} onClick={() => p.selectTake(t.id === auto?.id ? null : t.id)}>
             <div className="row">
               <b>Take {p.wf.takes.length - i}</b>
               <span className="mono faint">{t.created}</span>
@@ -90,34 +128,168 @@ export function PickPanel(p: PanelProps) {
 
 // ── Design edits ─────────────────────────────────────────────────────
 
+const KIND_TITLE: Record<FxKind, string> = {
+  segment: "Camera moves and looks (per part)", transition: "Transitions", video: "Video effects (over a time range)", graphic: "Graphics",
+  text: "Text and shapes", asset: "Your files over the picture", sound: "Sounds", voice: "The clip's own audio", music: "Music",
+};
+const FOLDER_LABEL: Record<AssetInfo["kind"], string> = { sfx: "Sound effects", music: "Music", overlay: "Overlays (GIF, WebM, MOV)", image: "Images", lut: "LUTs", font: "Fonts" };
+
+/** The effects library the planner draws from, and your files in assets/: browse, add, open the folder. */
+function LibraryCard({ p }: { p: PanelProps }) {
+  const [lib, setLib] = useState<EffectsLibrary | null>(null);
+  const [q, setQ] = useState("");
+  const [kind, setKind] = useState<AssetInfo["kind"]>("sfx");
+  const [busy, setBusy] = useState<number | null>(null);
+  const load = () => actions.effects().then(setLib).catch(() => setLib(null));
+  useEffect(() => {
+    load();
+  }, []);
+  if (!lib) return null;
+  const add = async (files: FileList | null) => {
+    if (!files?.length) return;
+    try {
+      for (const f of Array.from(files)) await uploadVideo(f, setBusy, `/api/assets/upload?kind=${kind}`);
+      p.toast(`Added ${files.length} file${files.length > 1 ? "s" : ""} to ${lib.folders[kind]}/. Design is out of date now, so the next Run plans with them.`);
+    } catch (e) {
+      p.toast((e as Error).message, "err");
+    }
+    setBusy(null);
+    load();
+    p.refresh();
+  };
+  const needle = q.trim().toLowerCase();
+  const match = (e: EffectInfo) => !needle || e.name.includes(needle.replace(/\s+/g, "_")) || e.description.toLowerCase().includes(needle) || e.tags.some((t) => t.includes(needle));
+  const xfades = lib.effects.filter((e) => e.kind === "transition" && e.tags.includes("xfade"));
+  const shown = lib.effects.filter((e) => !xfades.includes(e) || needle);
+  return (
+    <div className="card stack-sm lib-card">
+      <div className="row">
+        <b className="grow">Effects library</b>
+        <span className="mono faint">{lib.effects.length} effects · {lib.assets.length} file{lib.assets.length === 1 ? "" : "s"}</span>
+        <button className="btn sm" onClick={() => actions.openAssets().catch((e) => p.toast(e.message, "err"))}>Open assets folder</button>
+      </div>
+      <div className="hint">
+        Put sound effects, music, GIFs, stickers, LUTs and fonts in <span className="mono">{lib.assetsDir}/</span> and name them for what they are ("whoosh_long", "sad_piano"): the planner reads the names.
+        Your own effects go in <span className="mono">{lib.effectsDir}/</span> as JSON. New files put Design out of date, so the next Run plans with them.
+      </div>
+      <div className="row">
+        <select className="field" value={kind} onChange={(e) => setKind(e.target.value as AssetInfo["kind"])}>
+          {Object.entries(FOLDER_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+        </select>
+        <label className="btn sm">
+          ＋ Add files<input type="file" multiple hidden onChange={(e) => add(e.target.files)} />
+        </label>
+        {busy !== null && <span className="mono faint">{Math.round(busy * 100)}%</span>}
+      </div>
+      {lib.assets.length > 0 && (
+        <div className="asset-groups">
+          {(Object.keys(FOLDER_LABEL) as AssetInfo["kind"][]).filter((k) => lib.assets.some((a) => a.kind === k)).map((k) => (
+            <div key={k} className="asset-group">
+              <span className="label">{FOLDER_LABEL[k]}</span>
+              <div className="design-chips">
+                {lib.assets.filter((a) => a.kind === k).map((a) => (
+                  <a key={a.file} href={fileUrl(a.file)} target="_blank" rel="noreferrer" title={a.file}>{a.name}{a.duration ? <span className="faint"> {a.duration.toFixed(1)}s</span> : null}</a>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {lib.notes.map((n) => <div key={n} className="hint warn-text">{n}</div>)}
+      <details className="runners">
+        <summary>Browse the effects</summary>
+        <input className="field" placeholder="Search: glitch, sad, anime, text, border, whoosh…" value={q} onChange={(e) => setQ(e.target.value)} />
+        {(Object.keys(KIND_TITLE) as FxKind[]).map((k) => {
+          const list = shown.filter((e) => e.kind === k && match(e));
+          if (!list.length) return null;
+          return (
+            <div key={k} className="fx-group">
+              <div className="label">{KIND_TITLE[k]} <span className="faint">{list.length}</span></div>
+              {list.map((e) => (
+                <div key={`${e.kind}:${e.name}`} className="fx-item">
+                  <b className="mono">{e.name}</b>
+                  <span className="tag">{e.timing === "instant" ? `at a moment${e.duration ? ` · ${e.duration}s` : ""}` : e.timing === "range" ? "over a range" : "a whole part"}</span>
+                  {e.origin === "workspace" && <span className="tag" style={{ ["--c" as any]: "var(--ok)" }}>yours</span>}
+                  <span className="fx-desc">{e.description}</span>
+                  {e.params && <span className="fx-params mono">{Object.entries(e.params).map(([pk, ps]) => `${pk}${ps.type === "number" ? ` ${ps.min}–${ps.max}` : ps.type === "enum" ? ` ${ps.values.join("|")}` : ps.type === "asset" ? " (a file)" : ""}`).join(" · ")}</span>}
+                </div>
+              ))}
+              {k === "transition" && !needle && <div className="hint">Plus every ffmpeg transition: {xfades.map((e) => e.name).join(", ")}.</div>}
+            </div>
+          );
+        })}
+      </details>
+    </div>
+  );
+}
+
+/** The LLM's plans for one clip, with Jev's odds. */
+function Concepts({ list }: { list: DesignConcept[] }) {
+  return (
+    <div className="concepts">
+      {list.map((c) => (
+        <div key={c.key} className={`concept ${c.chosen ? "on" : ""} ${c.ok ? "" : "broken"}`}>
+          <div className="row">
+            <span className="concept-key mono">{c.key.toUpperCase()}</span>
+            <b className="grow" dir="auto">{c.name}</b>
+            {c.ok ? <span className="mono">{Math.round(c.p * 100)}%</span> : <span className="tag" style={{ ["--c" as any]: "var(--err)" }}>didn't render</span>}
+            {c.chosen && <span className="tag" style={{ ["--c" as any]: "var(--who-jev)" }}>Jev's pick</span>}
+          </div>
+          {c.ok && <Bar v={c.p} warn={0} />}
+          {c.idea && <div className="concept-idea" dir="auto">{c.idea}</div>}
+          {c.plan.length > 0 && (
+            <details>
+              <summary>The plan</summary>
+              <ul className="concept-plan">{c.plan.map((l, i) => <li key={i} dir="auto">{l}</li>)}</ul>
+            </details>
+          )}
+          {c.notes.length > 0 && (
+            <details>
+              <summary className="warn-text">{c.notes.length} note{c.notes.length > 1 ? "s" : ""} from the checks</summary>
+              <ul className="concept-plan">{c.notes.map((l, i) => <li key={i} dir="auto">{l}</li>)}</ul>
+            </details>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function DesignPanel(p: PanelProps) {
   const run = p.run;
   const job = nodeJob(p, "design");
+  const node = p.wf.nodes.design;
   if (!run) return <div className="empty-panel"><p>No take yet. Pick clips first.</p></div>;
   const d = run.design;
+  const planned = d ? Object.values(d.clips).filter((c) => c.mode === "concepts").length : 0;
+  const effects = run.clips.reduce((n, c) => n + (c.edit?.fx?.length ?? 0), 0);
   const decisions = d ? Object.values(d.clips).reduce((n, c) => n + c.zooms.length + c.transitions.length + (c.hook ? 1 : 0) + (c.emphasis?.length ?? 0), 0) : 0;
   return (
     <div className="stack">
       <div className="card row">
         <div className="grow">
-          <b>{d ? `${decisions} Jev choices` : "Not designed yet"}</b>
+          <b>{!d ? "Not designed yet" : planned ? `${planned} clip${planned === 1 ? "" : "s"} planned · ${effects} effect${effects === 1 ? "" : "s"}` : `${decisions} Jev choices`}</b>
           <div className="hint">
-            {d
-              ? `${d.guide === "llm" ? "Guidance from the brief" : "Built-in guidance"} · $${d.cost.toFixed(3)} · the LLM wrote hook-card options, Jev picked`
-              : "Jev picks each part's camera move and each gap's transition from what the outline allows, then the hook card from the LLM's options."}
+            {!d
+              ? "The LLM plans two edits per clip from the effects library and your files, code checks and test-renders them, and Jev picks one. Then the hook card and emphasis words."
+              : `${planned ? "The LLM planned two edits per clip; Jev picked" : "Jev picked a move per part and a transition per join"} · the LLM wrote hook-card options, Jev picked · $${d.cost.toFixed(3)}`}
           </div>
+          {node.state === "stale" && node.reason && <div className="hint warn-text">{node.reason}</div>}
         </div>
         {job?.status === "running" ? <button className="btn danger" onClick={() => p.stop(job.id)}>■ Stop</button>
-          : <button className="btn primary" onClick={() => p.step("design", { take: run.id })}>{d ? "↻ Redesign" : "▶ Design"}</button>}
+          : <StepTrigger p={p} id="design" first="Design" again="Redesign" args={{ take: run.id }} />}
       </div>
       {run.review.approved && d && <div className="hint warn-text">This take is reviewed; redesigning sends it back to review.</div>}
       {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}
+      <LibraryCard p={p} />
       {d && run.clips.map((c) => {
         const cd = d.clips[c.id];
         if (!cd || !c.edit) return null;
         return (
           <div key={c.id} className="card stack-sm design-clip">
             <div className="row"><span className="clip-num">{c.id}</span><span className="clip-title grow" dir="auto">{c.title}</span></div>
+            {cd.concepts?.length ? <Concepts list={cd.concepts} /> : null}
+            <EditTimeline edit={c.edit} timeline={c.timeline} />
             {cd.hook && (
               <div className="hooks">
                 {Object.entries(cd.hook.texts).map(([k, text]) => (
@@ -128,14 +300,14 @@ export function DesignPanel(p: PanelProps) {
                 ))}
               </div>
             )}
-            {c.edit.segments.map((s, i) => {
+            {cd.mode !== "concepts" && c.edit.segments.map((s, i) => {
               const z = cd.zooms.find((x) => x.piece === i + 1);
               const t = i > 0 ? cd.transitions.find((x) => x.gap === i) : undefined;
               return (
                 <div key={i} className="design-row-wrap">
                   {i > 0 && (
                     <div className="design-gap">
-                      <span className="mono">↓ {c.edit!.transitions[i - 1] ?? "cut"}</span>
+                      <span className="mono">↓ {gapName(c.edit!.transitions[i - 1])}</span>
                       {t && <Odds options={t.options} chosen={t.transition} />}
                     </div>
                   )}
@@ -178,10 +350,10 @@ export function RenderPanel(p: PanelProps) {
       <div className="card row">
         <div className="grow">
           <b>{node.facts.find(([k]) => k === "Rendered")?.[1] ?? "0"} rendered</b>
-          <div className="hint">ffmpeg renders each kept clip: face-tracked 9:16 framing, the designed moves and transitions, the outline's look, karaoke captions and the hook card. Only clips whose edit changed are rendered again.</div>
+          <div className="hint">ffmpeg renders each kept clip in one pass: face-tracked 9:16 framing, the designed edit with its effects, overlays, sounds and music, the outline's look, captions and the hook card. Only clips whose edit (or an effect or file it uses) changed are rendered again.</div>
         </div>
         {job?.status === "running" ? <button className="btn danger" onClick={() => p.stop(job.id)}>■ Stop</button>
-          : <button className="btn primary" disabled={node.state === "locked"} onClick={() => p.step("render", { take: run.id })}>{node.state === "done" ? "↻ Re-render changed" : "▶ Render"}</button>}
+          : <StepTrigger p={p} id="render" first="Render" again="Render changed clips" args={{ take: run.id }} />}
       </div>
       {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}
       {run.clips.map((c) => {
@@ -195,7 +367,9 @@ export function RenderPanel(p: PanelProps) {
             </div>
             {dropped ? <span className="tag">dropped</span> : c.file ? (stale.has(c.id) ? <span className="tag" style={{ ["--c" as any]: "var(--warn)" }}>edit changed</span> : <span className="tag" style={{ ["--c" as any]: "var(--ok)" }}>rendered</span>) : <span className="tag">not yet</span>}
             {c.file && <a className="btn sm" href={fileUrl(c.file)} download>Download</a>}
-            <button className="btn sm" disabled={node.state === "locked" || job?.status === "running"} onClick={() => p.step("render", { take: run.id, only: [c.id], force: true })}>{c.file ? "Re-render" : "Render"}</button>
+            {!dropped && (c.file && !stale.has(c.id)
+              ? <button className="btn sm up-to-date" disabled title={UP_TO_DATE}>✓ Up to date</button>
+              : <button className="btn sm" disabled={node.state === "locked" || job?.status === "running"} onClick={() => p.step("render", { take: run.id, only: [c.id] })}>{c.file ? "Re-render" : "Render"}</button>)}
           </div>
         );
       })}
@@ -249,7 +423,7 @@ export function CheckPanel(p: PanelProps) {
           <div className="hint">Every finished clip is heard (Whisper) and watched (a frame every ~3 s, faces measured locally), then Jev rates it on the brief's check rules and checks its in and out points. ◇ = a rule from the style reference.</div>
         </div>
         {job?.status === "running" ? <button className="btn danger" onClick={() => p.stop(job.id)}>■ Stop</button>
-          : <button className="btn primary" disabled={node.state === "locked"} onClick={() => p.step("check", { take: run.id })}>{node.state === "done" ? "↻ Re-check" : "▶ Check"}</button>}
+          : <StepTrigger p={p} id="check" first="Check" again="Check changed clips" args={{ take: run.id }} />}
       </div>
       {job && job.status !== "done" && <JobCard job={job} onStop={p.stop} defaultOpen />}
       {run.clips.filter((c) => c.file).map((c) => {

@@ -1,6 +1,7 @@
 // Pieces several panels share: score bars and odds, the edit timeline, shot strips, diffs, the brief.
 import { useEffect, useMemo, useState } from "react";
-import { actions, fileUrl, type Brief, type ClipEdit, type EdgeCheck, type Job, type Library, type NodeId, type PickScores, type Run, type Scorecard, type Shot, type StepArgs, type Video, type Workflow } from "../api";
+import { actions, fileUrl, type Brief, type ClipEdit, type ClipTimeline, type EdgeCheck, type FxKind, type Job, type Library, type NodeId, type PickScores, type Run, type Scorecard, type Shot, type StepArgs, type Video, type Workflow } from "../api";
+import { UP_TO_DATE } from "../Common";
 import { tc } from "../util";
 
 export type PanelProps = {
@@ -15,6 +16,18 @@ export type PanelProps = {
 
 /** The job currently attached to a node (running, or the last one). */
 export const nodeJob = (p: PanelProps, id: NodeId) => p.jobs.find((j) => j.id === p.wf.nodes[id].job);
+
+/** A step's trigger in its panel, the same rule as on the canvas: off while the step is up to date with
+ *  its inputs (it would give the same result), `again` after an input changed, `first` otherwise. */
+export function StepTrigger({ p, id, first, again, args }: { p: PanelProps; id: NodeId; first: string; again: string; args?: StepArgs }) {
+  const state = p.wf.nodes[id].state;
+  if (state === "done") return <button className="btn up-to-date" disabled title={UP_TO_DATE}>✓ Up to date</button>;
+  return (
+    <button className="btn primary" disabled={state === "locked" || state === "optional"} onClick={() => p.step(id, args)}>
+      ▶ {state === "stale" ? again : first}
+    </button>
+  );
+}
 
 /** Run an action, toast its result, refresh the workspace. */
 export function useGuard(p: Pick<PanelProps, "refresh" | "toast">) {
@@ -82,14 +95,60 @@ export function ShotStrip({ shots, start, end }: { shots: Shot[]; start: number;
 
 // ── The edit ─────────────────────────────────────────────────────────
 
-const TRANSITION_GLYPH: Record<string, string> = { cut: "|", crossfade: "◐", dip_black: "●", slide: "⇠", zoom: "⊕", whip: "≋", flash: "✦", iris: "◎", blur: "≈" };
+const TRANSITION_GLYPH: Record<string, string> = { cut: "|", crossfade: "◐", dip_black: "●", slide: "⇠", zoom: "⊕", whip: "≋", flash: "✦", iris: "◎", blur: "≈", flash_cut: "✦", impact_cut: "✸", glitch_cut: "▦", asset_wipe: "▣" };
 const ZOOM_LABEL: Record<string, string> = { punch_in: "punch-in", slow_push: "slow push", ken_burns: "Ken Burns", zoom_out: "pull back", drift: "drift" };
+const LOOK_LABEL: Record<string, string> = { bw: "black & white", sepia: "sepia", mirror: "mirrored" };
+export const gapName = (g: ClipEdit["transitions"][number] | undefined) => (!g ? "cut" : typeof g === "string" ? g : g.fx);
+const gapTitle = (g: ClipEdit["transitions"][number] | undefined) => (!g ? "cut" : typeof g === "string" ? g : `${g.fx}${g.duration ? ` · ${g.duration}s` : ""}${g.params ? ` · ${Object.entries(g.params).map(([k, v]) => `${k} ${v}`).join(", ")}` : ""}`);
 
-/** The clip's edit: parts in play order, sized by duration, with the transitions between them. */
-export function EditTimeline({ edit, onToggle }: { edit: ClipEdit; onToggle?: (on: boolean) => void }) {
+/** Which lane an effect is drawn in. */
+const LANE: Record<FxKind, "picture" | "text" | "sound"> = { segment: "picture", transition: "picture", video: "picture", graphic: "picture", asset: "picture", text: "text", sound: "sound", voice: "sound", music: "sound" };
+const LANES: ["picture" | "text" | "sound", string][] = [["picture", "Picture"], ["text", "Text"], ["sound", "Sound"]];
+
+/** Effects on the clip's timeline, one lane per kind of thing (picture, text, sound), packed into rows. */
+function FxLanes({ tl }: { tl: ClipTimeline }) {
+  const T = Math.max(0.1, tl.duration);
+  const at = (t: number) => `${Math.min(100, Math.max(0, (t / T) * 100)).toFixed(2)}%`;
+  return (
+    <div className="fx-lanes">
+      {LANES.filter(([k]) => tl.fx.some((f) => LANE[f.kind] === k)).map(([k, label]) => {
+        const marks = tl.fx.filter((f) => LANE[f.kind] === k).sort((x, y) => x.t0 - y.t0);
+        // Greedy rows so overlapping effects stack instead of hiding each other.
+        const ends: number[] = [];
+        const rows = marks.map((f) => {
+          const w = Math.max(f.t1, f.t0 + T * 0.05);
+          let r = ends.findIndex((e) => e <= f.t0);
+          if (r === -1) r = ends.push(0) - 1;
+          ends[r] = w;
+          return r;
+        });
+        return (
+          <div key={k} className="fx-lane">
+            <span className="fx-lane-name">{label}</span>
+            <div className="fx-lane-track" style={{ height: `${Math.max(1, ends.length) * 17 + 3}px` }}>
+              {tl.parts.slice(1).map((pt, i) => <i key={i} className="fx-tick" style={{ left: at(pt.t0) }} />)}
+              {marks.map((f, i) => (
+                <span key={i} className={`fx-mark k-${f.kind}${f.t1 - f.t0 < T * 0.03 ? " hit" : ""}`} dir="auto"
+                  style={{ left: at(f.t0), width: `max(7px, ${at(f.t1 - f.t0)})`, top: `${rows[i] * 17 + 2}px` }}
+                  title={`${f.fx.replace(/_/g, " ")}${f.label ? ` · ${f.label}` : ""} · ${tc(f.t0, true)}${f.t1 - f.t0 > 0.3 ? `–${tc(f.t1, true)}` : ""}`}>
+                  <em>{f.label && f.kind === "text" ? f.label : f.fx.replace(/_/g, " ")}</em>
+                </span>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+      <div className="fx-scale"><span>0:00</span><span className="mono">{tl.fx.length} effect{tl.fx.length === 1 ? "" : "s"}</span><span>{tc(tl.duration, true)}</span></div>
+    </div>
+  );
+}
+
+/** The clip's edit: parts in play order, sized by duration, with the transitions between them and, below,
+ *  the effects on its timeline. */
+export function EditTimeline({ edit, timeline, onToggle }: { edit: ClipEdit; timeline?: ClipTimeline | null; onToggle?: (on: boolean) => void }) {
   const on = edit.enabled !== false;
-  const durs = edit.segments.map((s) => (s.end - s.start) / (s.speed ?? 1));
-  const total = durs.reduce((a, b) => a + b, 0);
+  const durs = timeline?.parts.length === edit.segments.length ? timeline.parts.map((pt) => pt.t1 - pt.t0) : edit.segments.map((s) => (s.end - s.start) / (s.speed ?? 1) + (s.freeze ?? 0));
+  const total = timeline?.duration ?? durs.reduce((a, b) => a + b, 0);
   const coldOpen = edit.segments.some((s, i) => i > 0 && s.start < edit.segments[i - 1].start);
   return (
     <div className={`edl ${on ? "" : "off"}`}>
@@ -97,6 +156,7 @@ export function EditTimeline({ edit, onToggle }: { edit: ClipEdit; onToggle?: (o
         <span className="label">Edit</span>
         <span className="hint grow">
           {edit.segments.length} part{edit.segments.length > 1 ? "s" : ""} · {total.toFixed(1)}s{coldOpen ? " · cold open" : ""}
+          {edit.concept ? <> · <i dir="auto">{edit.concept.name}</i></> : null}
         </span>
         {onToggle && (
           <label className="edl-toggle" title="Off = render the plain range with simple captions">
@@ -106,18 +166,24 @@ export function EditTimeline({ edit, onToggle }: { edit: ClipEdit; onToggle?: (o
       </div>
       {edit.title && <div className="edl-title ar" dir="auto">▣ {edit.title}</div>}
       <div className="edl-track">
-        {edit.segments.map((s, i) => (
-          <div key={i} className="edl-piece" style={{ flexGrow: durs[i] }}>
-            {i > 0 && <span className={`edl-tr t-${edit.transitions[i - 1]}`} title={edit.transitions[i - 1]}>{TRANSITION_GLYPH[edit.transitions[i - 1]] ?? "|"}</span>}
-            <div className={`edl-seg r-${s.role ?? "none"}`} title={`${tc(s.start, true)}–${tc(s.end, true)}${s.speed && s.speed !== 1 ? ` at ${s.speed}×` : ""}`}>
-              <b>{i + 1}</b>
-              <span>{s.role ?? tc(s.start)}</span>
-              {s.zoom && s.zoom !== "none" && <i>{ZOOM_LABEL[s.zoom] ?? s.zoom}</i>}
-              {s.look && s.look !== "none" && <i>{s.look === "bw" ? "black & white" : "sepia"}</i>}
+        {edit.segments.map((s, i) => {
+          const gap = edit.transitions[i - 1];
+          const looks = [s.look, ...(s.fx ?? []).map((f) => f.fx).filter((f) => f !== s.zoom)].filter((l): l is string => !!l && l !== "none");
+          return (
+            <div key={i} className="edl-piece" style={{ flexGrow: durs[i] }}>
+              {i > 0 && <span className={`edl-tr t-${gapName(gap)}`} title={gapTitle(gap)}>{TRANSITION_GLYPH[gapName(gap)] ?? "◇"}</span>}
+              <div className={`edl-seg r-${s.role ?? "none"}`} title={`${tc(s.start, true)}–${tc(s.end, true)}${s.speed && s.speed !== 1 ? ` at ${s.speed}×` : ""}${s.freeze ? `, holds ${s.freeze}s` : ""}${s.reverse ? ", reversed" : ""}`}>
+                <b>{i + 1}</b>
+                <span>{s.role ?? tc(s.start)}</span>
+                {s.zoom && s.zoom !== "none" && <i>{ZOOM_LABEL[s.zoom] ?? s.zoom.replace(/_/g, " ")}</i>}
+                {looks.map((l) => <i key={l}>{LOOK_LABEL[l] ?? l.replace(/_/g, " ")}</i>)}
+                {(s.speed && s.speed !== 1) || s.freeze || s.reverse ? <i className="edl-time">{[s.speed && s.speed !== 1 && `${s.speed}×`, s.freeze && `❚❚ ${s.freeze}s`, s.reverse && "↺"].filter(Boolean).join(" ")}</i> : null}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
+      {timeline && timeline.fx.length > 0 && <FxLanes tl={timeline} />}
       {edit.emphasis?.length ? <div className="edl-emph">{edit.emphasis.map((w) => <span key={w} className="ar" dir="auto">{w}</span>)}</div> : null}
     </div>
   );

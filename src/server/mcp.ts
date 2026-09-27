@@ -13,13 +13,14 @@ import { readBrief } from "./agents/brief";
 import { readCheck } from "./agents/check";
 import { outlineState } from "./agents/outlines";
 import { readReference, referenceText, setGuide } from "./agents/reference";
-import { adjustClipEdges } from "./agents/take";
+import { adjustClipEdges, savePickSettings } from "./agents/take";
 import { readVision } from "./agents/vision";
 import { getJob, jobSummary, waitForJob, type Job } from "./jobs";
+import { gapOf } from "./effects/timeline";
 import { fmt } from "./lib";
 import { OUTLINE_FILE, historyPaths, listRuns, listVideos, readText, readTranscript, rel, resolveVideo, runDir } from "./library";
 import { feedbackDigest, readReview } from "./review";
-import { LABEL, describeWorkflow, startWorkflow, workflowState, type NodeId } from "./workflow";
+import { LABEL, describeWorkflow, startWorkflow, stepUpToDate, workflowState, type NodeId } from "./workflow";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -125,24 +126,31 @@ export const AGENTS = {
         "run_workflow",
         {
           description:
-            "▶ Run: do every step that isn't done, in order (transcribe, reference style, brief, then a take: pick → design → render → check), " +
-            "stopping at Review for the user. After a finished review it runs the Coach. Returns a job_id; poll job_status.",
+            "▶ Run: do every step that isn't up to date, in order (transcribe, reference style, brief, then a take: pick → design → render → check), " +
+            "stopping at Review for the user. After a finished review it runs the Coach. Steps are idempotent: one whose inputs haven't changed " +
+            "doesn't run again, so when everything is up to date there's nothing to run. For a new take, change one of Pick's inputs: a direction " +
+            "or clip count given here is saved as Pick's setting, and a different one makes the current take out of date. " +
+            "Returns a job_id to poll with job_status, or why there's nothing to run.",
           inputSchema: {
             video: z.string(),
             take: z.string().optional(),
-            direction: z.string().optional().describe("Direction for a new take, e.g. 'focus on the buffalo section'"),
-            count: z.number().int().min(1).max(20).optional().describe("Number of clips for a new take (default: the outline's)"),
-            new_take: z.boolean().optional().describe("Make a new take even if the current one is up to date"),
+            direction: z.string().optional().describe("Pick's direction, e.g. 'focus on the buffalo section' (saved; a different one makes a new take; '' clears it)"),
+            count: z.number().int().min(1).max(20).optional().describe("Pick's clip count (saved; a different one makes a new take)"),
           },
         },
-        safe((a: { video: string; take?: string; direction?: string; count?: number; new_take?: boolean }) => started(startWorkflow({ video: a.video, take: a.take, notes: a.direction, count: a.count, fresh: a.new_take }))),
+        safe((a: { video: string; take?: string; direction?: string; count?: number }) => {
+          const r = startWorkflow({ video: a.video, take: a.take, direction: a.direction, count: a.count });
+          return "skipped" in r ? { nothing_to_run: r.skipped } : started(r);
+        }),
       );
       server.registerTool(
         "run_step",
         {
           description:
             `Run one step on its own: ${STEPS.map((s) => `${s} (${LABEL[s]})`).join(", ")}. ` +
-            "pick makes a new take (optionally with direction); design, render and check need a take id. Returns a job_id; poll job_status.",
+            "A step that's up to date with its inputs doesn't run (it would give the same result): the answer says so. " +
+            "pick uses Pick's settings (a direction or count given here is saved first); design, render and check need a take id; " +
+            "coach can take a new direction. Returns a job_id; poll job_status.",
           inputSchema: {
             step: z.enum(STEPS),
             video: z.string().optional(),
@@ -157,11 +165,16 @@ export const AGENTS = {
             if (!x) throw new Error(`${LABEL[a.step as NodeId]} needs a ${what}`);
             return x;
           };
+          if (a.step === "pick" && (a.direction !== undefined || a.count !== undefined)) {
+            savePickSettings(resolveVideo(need(a.video, "video")), { direction: a.direction, count: a.count });
+          }
+          const why = stepUpToDate(a.step, a.video, a.take ?? null, { direction: a.direction });
+          if (why) return { up_to_date: why };
           switch (a.step) {
             case "transcript": return started(startTranscript(need(a.video, "video")));
             case "refstyle": return started(startRefStyle());
             case "brief": return started(startBrief(need(a.video, "video")));
-            case "pick": return started(startPick({ video: need(a.video, "video"), notes: a.direction, count: a.count }));
+            case "pick": return started(startPick({ video: need(a.video, "video") }));
             case "design": return started(startDesign(need(a.take, "take")));
             case "render": return started(startRender({ run: need(a.take, "take"), only: a.only }));
             case "check": return started(startCheck({ run: need(a.take, "take"), only: a.only }));
@@ -260,7 +273,9 @@ export const AGENTS = {
               id: c.id, title: c.title, from: fmt(c.start), to: fmt(c.end), seconds: +(c.end - c.start).toFixed(1),
               hook_card: c.edit?.title ?? null,
               parts: c.edit?.segments.map((s) => `${fmt(s.start)}-${fmt(s.end)} ${s.zoom ?? "none"}${s.look ? ` ${s.look}` : ""}`) ?? [],
-              transitions: c.edit?.transitions ?? [],
+              transitions: (c.edit?.transitions ?? []).map((g) => { const x = gapOf(g); return x.duration ? `${x.fx} ${x.duration}s` : x.fx; }),
+              ...(c.edit?.concept ? { concept: c.edit.concept } : {}),
+              ...(c.edit?.fx?.length ? { effects: c.edit.fx.map((f) => `${f.fx}${f.at !== undefined ? ` at ${f.at}` : ""}${f.from !== undefined || f.to !== undefined ? ` ${f.from ?? "start"}→${f.to ?? "end"}` : ""}`) } : {}),
               check: k ? { rules_followed: k.followed, missed: (ck!.rules ?? []).filter((q) => (k.rules[q.key] ?? 1) < 0.4).map((q) => q.rule), edges: k.edges } : null,
               verdict: rv.clips[c.id]?.status ?? null,
               comments: (rv.clips[c.id]?.comments ?? []).map((x) => x.text),

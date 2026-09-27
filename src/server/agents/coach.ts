@@ -12,10 +12,28 @@ import { MODELS, WRITER } from "../config";
 import { extractJson, openrouter } from "../lib";
 import { OUTLINE_FILE, readText } from "../library";
 import { readReview } from "../review";
+import { referenceFingerprint } from "./brief";
 import { readCheck } from "./check";
-import { clipReward, saveProposal, saveScorecard, selectTakes, takeEvidence, type Proposal, type Scorecard } from "./outlines";
+import { clipReward, saveProposal, saveScorecard, selectTakes, takeEvidence, type CoachInputs, type Proposal, type Scorecard } from "./outlines";
 import { ensureReference, readReference, referenceText } from "./reference";
 import { bold, clipStr, hashText, replaceSection, sectionsOf } from "./text";
+
+/** Fingerprints of everything the Coach reads: the outline, the style reference, and the takes it would
+ *  pick as evidence (their reviews and check results). Null when there's nothing to learn from yet.
+ *  Its scorecard records them, and the Coach is up to date while they stay the same. */
+export function coachInputs(video?: string): CoachInputs | null {
+  let takes: ReturnType<typeof selectTakes>["takes"];
+  try {
+    takes = selectTakes({ video }).takes;
+  } catch {
+    return null;
+  }
+  return {
+    outline: hashText(readText(OUTLINE_FILE).replace(/\r\n/g, "\n")),
+    reference: referenceFingerprint(),
+    evidence: hashText(JSON.stringify(takes.map((t) => [t.id, readReview(t.id), readCheck(t.id)?.at ?? 0]))),
+  };
+}
 
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
@@ -66,6 +84,8 @@ export async function coachOutline(ctx: JobContext, input: { video?: string; dir
   if (!outline) throw new Error("The outline is empty");
   const hash = hashText(outline);
   await ensureReference(ctx);
+  // What it learns from, as it is now (after the reference is analysed): the scorecard records it.
+  const inputs = coachInputs(input.video);
   const { cur, takes, outcomes, label, ratedCount } = selectTakes(input);
   const ref = readReference();
   const refText = ref?.analysis ? referenceText(ref) : "";
@@ -160,7 +180,10 @@ export async function coachOutline(ctx: JobContext, input: { video?: string; dir
     const v = rw.sections.find((s) => s.section === d.section)!.variants.find((x) => x.key === d.chosen)!;
     revised = replaceSection(revised, d.section, v.text);
   }
-  const sc: Scorecard = { id: `s${Date.now().toString(36)}`, at: Date.now(), outline_hash: hash, cost, calls, diagnosis: rw.diagnosis, rules, decisions };
+  const sc: Scorecard = {
+    id: `s${Date.now().toString(36)}`, at: Date.now(), outline_hash: hash, cost, calls, diagnosis: rw.diagnosis, rules, decisions,
+    ...(inputs ? { inputs } : {}), ...(input.direction?.trim() ? { direction: input.direction.trim() } : {}),
+  };
   const changed = decisions.filter((d) => d.applied);
   if (changed.length && hashText(revised) !== hash) {
     const missing = bold(outline).filter((l) => !bold(revised).includes(l));

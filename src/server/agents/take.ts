@@ -1,28 +1,76 @@
 // A take: one pass of Make (pick → design → render → check) over a source video, stored in
 // clips/<video>_<stamp>/:
 //   clip_script.md   human-readable plan plus the machine-readable clip data (edits included)
-//   take.json        what the take was made from (outline, reference and brief versions) and your direction
+//   take.json        what the take was made from: fingerprints of every input (see TakeInfo)
 //   outline.md       the outline it was made with (the coach scores outline versions by their takes)
 //   jev.json         the pick decisions and the brief snapshot; design.json, render.json, check.json follow
-// A take never changes its inputs: when the outline, reference or brief change, the next Run makes a new take.
+// A take never changes its inputs: when any of them changes, the take is out of date and the next Run
+// makes a new take. While none has, Pick is up to date and won't run again: it would pick the same take.
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join, parse } from "node:path";
 import type { JobContext } from "../jobs";
 import {
-  CLIPS_DIR, OUTLINE_FILE, historyPaths, readClipData, readSetting, readText, readTranscript, rel, runDir, transcriptJson, writeClipData,
-  type ClipData,
+  CLIPS_DIR, OUTLINE_FILE, historyPaths, listRuns, readClipData, readSetting, readText, readTranscript, rel, runDir, transcriptDir, transcriptJson,
+  writeClipData, type ClipData,
 } from "../library";
-import { addNudge } from "../review";
+import { addNudge, readNotes } from "../review";
 import { fmt, type Segment } from "../lib";
 import { snapshotOutline } from "./outlines";
 import { describeEdit, readEditStyle, type Edit } from "./edit";
+import { hashText } from "./text";
 
 export type TakeInput = { video: string; count?: number; min_len?: number; max_len?: number; notes?: string };
 export type TakeInfo = {
-  video: string; created: number; notes?: string;
-  /** Versions of the inputs the take was made from. */
-  inputs: { outline: string; reference: string; brief: string };
+  video: string; created: number;
+  /** The direction and clip count it was picked with (Pick's settings at the time). */
+  notes?: string; count?: number | null;
+  /** Fingerprints of what the take was made from. The last three are missing on takes from before they were tracked. */
+  inputs: { outline: string; reference: string; brief: string; settings?: string; notes?: string; transcript?: string };
 };
+
+// ── Pick's own inputs ────────────────────────────────────────────────
+// Besides the brief, Pick reads its settings (a direction and a clip count, set in its panel), your notes
+// pinned to transcript lines, and the transcript. They're saved per video, so they're inputs like any
+// other: changing one puts the take out of date, and leaving them alone means there's nothing to redo.
+
+export type PickSettings = { direction: string; count: number | null };
+const pickFile = (video: string) => join(transcriptDir(video), "pick.json");
+
+/** Saved settings; until any are saved, whatever the latest take was picked with. */
+export function readPickSettings(video: string): PickSettings {
+  try {
+    const s = JSON.parse(readFileSync(pickFile(video), "utf8"));
+    return { direction: String(s.direction ?? "").trim(), count: Number.isInteger(s.count) && s.count > 0 ? s.count : null };
+  } catch {
+    const latest = listRuns().find((r) => r.videoStem === parse(video).name);
+    return takeSettings(latest ? readTakeInfo(latest.id) : null);
+  }
+}
+
+/** The settings a take was picked with. */
+export function takeSettings(info: TakeInfo | null): PickSettings {
+  return { direction: info?.notes?.trim() ?? "", count: info?.count ?? null };
+}
+
+export function savePickSettings(video: string, s: { direction?: string; count?: number | null }): PickSettings {
+  const cur = readPickSettings(video);
+  const count = s.count === undefined ? cur.count : s.count === null || !(Number(s.count) > 0) ? null : Math.min(20, Math.round(Number(s.count)));
+  const next: PickSettings = { direction: s.direction === undefined ? cur.direction : String(s.direction).trim(), count };
+  mkdirSync(transcriptDir(video), { recursive: true });
+  writeFileSync(pickFile(video), JSON.stringify(next, null, 2), "utf8");
+  return next;
+}
+
+/** Fingerprints of Pick's inputs besides the brief, as a take records them. */
+export function pickInputs(video: string): { settings: string; notes: string; transcript: string } {
+  const tj = transcriptJson(video);
+  const st = existsSync(tj) ? statSync(tj) : null;
+  return {
+    settings: hashText(JSON.stringify(readPickSettings(video))),
+    notes: hashText(JSON.stringify(readNotes(video).map((n) => [n.t, n.text]))),
+    transcript: st ? `${st.size}:${Math.round(st.mtimeMs)}` : "",
+  };
+}
 
 export type PlannedClip = {
   id: number; title: string; start: number; end: number;
