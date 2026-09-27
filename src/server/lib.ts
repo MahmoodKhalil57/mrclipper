@@ -2,7 +2,6 @@ import { MISSING_KEY, openrouterKey } from "./key";
 import { toolPath } from "./config";
 
 const BUNDLED = new Set(["ffmpeg", "yt-dlp"]);
-import { assertCloud } from "./cloud";
 
 /** A transcript line. `words` (measured per-word times) is present when the timing pass aligned it. */
 export type Segment = {
@@ -34,9 +33,17 @@ export async function run(
   opts: { cwd?: string; onStdout?: (line: string) => void; signal?: AbortSignal } = {},
 ) {
   opts.signal?.throwIfAborted();
-  // The desktop app ships its own ffmpeg and yt-dlp; use them over whatever is (or isn't) on PATH.
+  // The desktop app ships its own ffmpeg and yt-dlp, and a checkout downloads them into .store/tools;
+  // use those over whatever is (or isn't) on PATH.
   const exe = BUNDLED.has(cmd[0]) ? toolPath(cmd[0]) : cmd[0];
-  const proc = Bun.spawn([exe, ...cmd.slice(1)], { cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
+  const spawn = () => Bun.spawn([exe, ...cmd.slice(1)], { cwd: opts.cwd, stdout: "pipe", stderr: "pipe" });
+  let proc: ReturnType<typeof spawn>;
+  try {
+    proc = spawn();
+  } catch (e) {
+    if (BUNDLED.has(cmd[0])) throw new Error(`${cmd[0]} isn't installed. Run \`bun run setup\` to download it, or install it on your PATH.`);
+    throw e;
+  }
   const kill = () => proc.kill();
   opts.signal?.addEventListener("abort", kill, { once: true });
   const stderr = new Response(proc.stderr).text();
@@ -75,7 +82,7 @@ export async function probeDuration(path: string): Promise<number> {
   return (await probeMedia(path)).duration;
 }
 
-export type ChatResult = { content: string; model: string; usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number } };
+export type ChatResult = { content: string; model: string; provider?: string; usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number } };
 
 /** One OpenRouter chat completion. `models` may list fallbacks. */
 export async function openrouter(
@@ -83,7 +90,6 @@ export async function openrouter(
   models: string | string[],
   signal?: AbortSignal,
 ): Promise<ChatResult> {
-  assertCloud("OpenRouter");
   const key = openrouterKey();
   if (!key) throw new Error(MISSING_KEY);
   const list = Array.isArray(models) ? models : [models];
@@ -95,7 +101,7 @@ export async function openrouter(
   });
   const data = (await res.json().catch(() => ({}))) as any;
   if (!res.ok || !data.choices) throw new Error(`OpenRouter HTTP ${res.status}: ${JSON.stringify(data).slice(0, 300)}`);
-  return { content: data.choices[0].message.content ?? "", model: data.model ?? list[0], usage: data.usage };
+  return { content: data.choices[0].message.content ?? "", model: data.model ?? list[0], provider: data.provider, usage: data.usage };
 }
 
 /** Pull a JSON object out of model output that may be fenced or wrapped in prose. */

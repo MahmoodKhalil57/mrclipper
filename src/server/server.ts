@@ -1,15 +1,16 @@
 import type { ServerWebSocket, Subprocess } from "bun";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { extname, join } from "node:path";
-import { APP_DIR, DATA_DIR, MODELS, PORT, ROOT, WORKER_PORT } from "./config";
+import { APP_DIR, DATA_DIR, MODELS, PORT, ROOT, USE_WRANGLER, WORKER_PORT, ensureWorkspace } from "./config";
 import { INTERNAL_TOKEN, keyStatus, openrouterKey } from "./key";
 import { workerdBinary, writeWorkerdConfig } from "./workerd";
 import { listJobs, onEvent, sysLog } from "./jobs";
 import { OUTLINE_FILE, historyPaths, listRuns, listVideos, readText, rel, safePath } from "./library";
 import { AGENTS, handleMcp, type McpAgentKey } from "./mcp";
 import { handleApi } from "./api";
-import { readReview, readSettings } from "./review";
-import { coachState } from "./agents/coach";
+import { readReview } from "./review";
+import { outlineState } from "./agents/outlines";
+import { pendingGuide, readReference } from "./agents/reference";
 
 const UI_DIR = join(APP_DIR, "dist", "ui");
 const WORKER_BUNDLE = join(APP_DIR, "dist", "worker", "director.js");
@@ -17,29 +18,56 @@ const WORKER_URL = `http://127.0.0.1:${WORKER_PORT}`;
 const SELF_URL = `http://127.0.0.1:${PORT}`;
 
 // ---------------------------------------------------------------------------
-// Think worker: run the prebuilt bundle under `wrangler dev` (workerd + Durable Objects).
+// The Director: the prebuilt Think worker bundle, run directly on workerd (or `wrangler dev` as a fallback).
 
 let worker: Subprocess | undefined;
 let workerState: "starting" | "ready" | "down" = "starting";
 let shuttingDown = false;
+
+const WORKER_PID = join(DATA_DIR, "workerd.pid");
+
+/** A Director runtime left behind by a server that was killed rather than stopped still holds its port.
+ *  Stop it first. It's remembered by PID, and only stopped if that PID is still a workerd process. */
+function stopLeftoverWorker() {
+  let pid = 0;
+  try {
+    pid = Number(readFileSync(WORKER_PID, "utf8").trim());
+  } catch {
+    return;
+  }
+  if (!pid) return;
+  const name = process.platform === "win32"
+    ? Bun.spawnSync(["tasklist", "/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"]).stdout.toString()
+    : Bun.spawnSync(["ps", "-p", String(pid), "-o", "comm="]).stdout.toString();
+  if (!/workerd/i.test(name)) return;
+  if (process.platform === "win32") Bun.spawnSync(["taskkill", "/pid", String(pid), "/T", "/F"], { stdout: "ignore", stderr: "ignore" });
+  else {
+    try {
+      process.kill(pid);
+    } catch {}
+  }
+  sysLog("Stopped a Director runtime left running by an earlier start", "warn");
+}
 
 function startWorker() {
   workerState = "starting";
   // MCP_BASE points the worker back at this server. It has no key of its own: it asks this server
   // for the browser's key on every model call, with a per-launch token (see key.ts).
   const vars = { MCP_BASE: SELF_URL, INTERNAL_TOKEN, DIRECTOR_MODEL: MODELS.director };
-  const workerd = process.env.CLIPDESK_WRANGLER ? null : workerdBinary();
+  const workerd = USE_WRANGLER ? null : workerdBinary();
   if (workerd) {
     // workerd directly: one binary, no Node or wrangler (what the desktop app ships).
     const dir = join(DATA_DIR, "workerd");
     const config = writeWorkerdConfig({ bundle: WORKER_BUNDLE, dir, port: WORKER_PORT, vars });
+    stopLeftoverWorker();
     worker = Bun.spawn([workerd, "serve", config, "--experimental"], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+    writeFileSync(WORKER_PID, String(worker.pid));
   } else {
     const envFile = join(DATA_DIR, "worker.env");
     writeFileSync(envFile, Object.entries(vars).map(([k, v]) => `${k}=${v}\n`).join(""));
     worker = Bun.spawn(
       [
-        "node", join(APP_DIR, "node_modules", "wrangler", "bin", "wrangler.js"), "dev", WORKER_BUNDLE,
+        process.execPath, join(APP_DIR, "node_modules", "wrangler", "bin", "wrangler.js"), "dev", WORKER_BUNDLE,
         "--no-bundle", "--config", join(APP_DIR, "wrangler.jsonc"), "--env-file", envFile,
         "--ip", "127.0.0.1", "--port", String(WORKER_PORT), "--persist-to", join(DATA_DIR, "wrangler"),
         "--show-interactive-dev-session=false", "--log-level", "warn",
@@ -148,10 +176,11 @@ async function library() {
     root: ROOT,
     videos: await listVideos(),
     runs: listRuns().map((r) => ({ ...r, review: readReview(r.id) })),
-    settings: readSettings(),
     outline,
     history: historyPaths(outline).map((p) => ({ path: rel(p), text: readText(p) })),
-    coach: coachState(),
+    outlines: outlineState(),
+    reference: readReference(),
+    pendingGuide: pendingGuide(),
   };
 }
 
@@ -174,14 +203,27 @@ function closeBoth(ws: ServerWebSocket<WsData>, code = 1000, reason = "") {
   } catch {}
 }
 
-/** Start the Clipdesk server and the Think worker. Shared by the CLI and the desktop app. */
-export function startClipdesk() {
+/** Bun.serve, with a clear message when the port is taken (often another mrClipper). */
+function serve(options: Parameters<typeof Bun.serve<WsData>>[0]) {
+  try {
+    return Bun.serve<WsData>(options);
+  } catch (e) {
+    if ((e as { code?: string }).code === "EADDRINUSE" || /EADDRINUSE|in use/i.test(String(e))) {
+      throw new Error(`Port ${PORT} is already in use (is mrClipper already running?). Stop it, or start with MRCLIPPER_PORT set to another port.`);
+    }
+    throw e;
+  }
+}
+
+/** Start the mrClipper server and the Think worker. Shared by the CLI and the desktop app. */
+export function startMrClipper() {
   for (const f of [UI_DIR, WORKER_BUNDLE]) {
     if (!existsSync(f)) throw new Error(`Missing ${f}. Run \`bun run build\` first.`);
   }
+  ensureWorkspace();
   if (!keyStatus().set) console.log("  OpenRouter key: none yet; the app asks for it on first open");
 
-  const server = Bun.serve<WsData>({
+  const server = serve({
     port: PORT,
     hostname: "127.0.0.1",
     idleTimeout: 255, // SSE streams and MCP status calls that wait up to 50s
@@ -213,7 +255,7 @@ export function startClipdesk() {
 
       // The Director worker's key lookup. Local only, and only with this launch's token.
       if (path === "/internal/key") {
-        if (req.headers.get("x-clipdesk-token") !== INTERNAL_TOKEN) return new Response("Forbidden", { status: 403 });
+        if (req.headers.get("x-mrclipper-token") !== INTERNAL_TOKEN) return new Response("Forbidden", { status: 403 });
         return json({ key: openrouterKey() });
       }
 
@@ -289,7 +331,7 @@ export function startClipdesk() {
   });
 
   startWorker();
-  console.log(`\n  Clipdesk  ${SELF_URL}\n  project   ${ROOT}\n  director  ${MODELS.director}\n`);
+  console.log(`\n  mrClipper  ${SELF_URL}\n  workspace  ${ROOT}\n  director   ${MODELS.director}\n`);
   return {
     url: SELF_URL,
     ready: () => workerState === "ready",

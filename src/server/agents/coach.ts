@@ -1,369 +1,191 @@
-// Outline coach: the LLM node after Clips that feeds back into the Outline.
-//
-// Every take snapshots the outline it was planned with (clips/<run>/outline.md), and every distinct
-// outline becomes a version in outlines/ledger.json. Your review of a take is its reward: a
-// "one-shot" score for how close the take came to being approved as-is (no drops, nudges or
-// comments). The coach reads the current outline, the evidence from recent takes, the best-scoring
-// earlier versions and how its own earlier proposals turned out, then proposes a revised outline.
-// You apply it (or not); the next takes score the new version, and the loop continues.
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { MODELS, ROOT } from "../config";
+// Step 6 · Coach (the LLM writes rewrites; Jev picks). It closes the loop back into the Outline:
+//   1. evidence   the reviewed takes: your keep/drop, nudges and comments, and each clip's Check scores
+//   2. stats      per check rule (code): how often clips follow it, on the clips you kept vs dropped
+//   3. rewrites   the LLM writes two alternatives for each outline section the evidence (or the style
+//                 reference) says should change. It writes; it doesn't decide
+//   4. choose     per section, Jev picks keep or a rewrite, given the stats, your comments and the reference.
+//                 A rewrite needs a clear win (at least 40%, and 10 points over the next option)
+//   5. propose    code assembles the revised outline; you apply it (or not) in the Coach panel
 import type { JobContext } from "../jobs";
+import { decide } from "../jev";
+import { MODELS, WRITER } from "../config";
 import { extractJson, openrouter } from "../lib";
-import { CLIPS_DIR, OUTLINE_FILE, historyPaths, listRuns, readClipData, readText, readTranscript } from "../library";
+import { OUTLINE_FILE, readText } from "../library";
 import { readReview } from "../review";
-import { readWatch, watchSummary } from "./watch";
+import { readCheck } from "./check";
+import { clipReward, saveProposal, saveScorecard, selectTakes, takeEvidence, type Proposal, type Scorecard } from "./outlines";
+import { ensureReference, readReference, referenceText } from "./reference";
+import { bold, clipStr, hashText, replaceSection, sectionsOf } from "./text";
 
-const DIR = join(ROOT, "outlines");
-const LEDGER = join(DIR, "ledger.json");
-const VERSIONS = join(DIR, "versions");
-const PROPOSALS = join(DIR, "proposals");
-const RUBRICS = join(DIR, "rubrics");
-const SCORECARDS = join(DIR, "scorecards");
+const pct = (v: number) => `${Math.round(v * 100)}%`;
+const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
-// ── Rubric (the LLM step before the Jev coach) and scorecards (Jev's judgement) ──
-export type RubricRule = { key: string; section: string; rule: string; question: string };
-export type RubricVariant = { key: string; summary: string; text: string };
-export type Rubric = {
-  source: "llm" | "default"; model?: string; at: number; outline_hash: string; cost: number; diagnosis: string;
-  rules: RubricRule[];
-  /** Sections the evidence says are hurting clips, each with rewrites for Jev to choose between. */
-  sections: { section: string; why: string; variants: RubricVariant[] }[];
-};
-export type Scorecard = {
-  id: string; at: number; mode: "jev" | "hybrid"; outline_hash: string; rubric_source: "llm" | "default"; cost: number; calls: number;
-  diagnosis: string;
-  rules: { key: string; section: string; rule: string; followed: number; good: number | null; bad: number | null; n: number }[];
-  clips: { run: string; clip: number; title: string; reward: number | null; watched: boolean; answers: Record<string, number> }[];
-  decisions: { section: string; chosen: string; summary: string; p: number; options: Record<string, number>; applied: boolean }[];
-  proposal?: string;
-};
+type Rewrites = { diagnosis: string; sections: { section: string; why: string; variants: { key: string; summary: string; text: string }[] }[]; model: string; cost: number };
 
-export function saveRubric(r: Rubric) {
-  mkdirSync(RUBRICS, { recursive: true });
-  writeFileSync(join(RUBRICS, `${r.outline_hash}.json`), JSON.stringify(r, null, 1), "utf8");
-}
-export const readRubric = (hash: string) => readJson<Rubric | null>(join(RUBRICS, `${hash.replace(/[^0-9a-f]/g, "")}.json`), null);
+async function writeRewrites(ctx: JobContext, p: { outline: string; evidence: string; stats: string; reference: string; direction?: string }): Promise<Rewrites> {
+  const secs = sectionsOf(p.outline);
+  const prompt = `You write candidate rewrites of a clip outline: the instructions a clipping pipeline follows to pick, edit and title short vertical clips.
+A scoring model (Jev) will choose, for each section you rewrite, between the current text and your rewrites, so write options, not a verdict.
+The goal: the next take is accepted as-is, with every clip kept and nothing to fix.
 
-export function saveScorecard(sc: Scorecard) {
-  mkdirSync(SCORECARDS, { recursive: true });
-  writeFileSync(join(SCORECARDS, `${sc.id}.json`), JSON.stringify(sc, null, 1), "utf8");
-}
-function latestScorecard(): Scorecard | null {
-  if (!existsSync(SCORECARDS)) return null;
-  const f = readdirSync(SCORECARDS).filter((x) => x.endsWith(".json")).sort().pop();
-  return f ? readJson<Scorecard | null>(join(SCORECARDS, f), null) : null;
-}
+## Outline
+${p.outline}
 
-export const hashText = (t: string) => createHash("sha1").update(t.replace(/\r\n/g, "\n").trim()).digest("hex").slice(0, 12);
+## Evidence: reviewed takes, your verdict on each clip, what the finished clips show, and your comments
+${p.evidence || "(no reviewed takes yet)"}
 
-export type OutlineVersion = { hash: string; at: number; source: "user" | "coach"; parent?: string; proposal?: string };
-export type Proposal = {
-  id: string; at: number; status: "proposed" | "applied" | "discarded";
-  parent: string; hash: string; outline: string;
-  changes: { section: string; change: string; evidence: string }[];
-  hypothesis: string; keep: string; warnings: string[];
-  takes: string[]; direction?: string; model: string; cost: number;
-  /** Who decided: the LLM coach, or Jev (System One / Hybrid) choosing between the rubric's rewrites. */
-  mode?: "llm" | "jev" | "hybrid"; scorecard?: string;
-};
-export type TakeOutcome = {
-  run: string; videoStem: string; created: string; engine: string; hash: string | null;
-  clips: number; dropped: number; nudged: number; comments: number; approved: boolean;
-  rated: boolean; score: number | null;
-};
-
-const readJson = <T,>(f: string, fallback: T): T => {
-  try {
-    return existsSync(f) ? JSON.parse(readFileSync(f, "utf8")) : fallback;
-  } catch {
-    return fallback;
-  }
-};
-
-export const readLedger = (): OutlineVersion[] => readJson<OutlineVersion[]>(LEDGER, []);
-
-/** Record an outline version (idempotent). Returns its hash. */
-export function registerOutline(text: string, source: "user" | "coach" = "user", extra: Partial<OutlineVersion> = {}) {
-  const hash = hashText(text);
-  const ledger = readLedger();
-  if (!ledger.some((v) => v.hash === hash)) {
-    mkdirSync(VERSIONS, { recursive: true });
-    writeFileSync(join(VERSIONS, `${hash}.md`), text, "utf8");
-    ledger.push({ hash, at: Date.now(), source, parent: ledger[ledger.length - 1]?.hash, ...extra });
-    writeFileSync(LEDGER, JSON.stringify(ledger, null, 1), "utf8");
-  }
-  return hash;
-}
-
-export const versionText = (hash: string) => readText(join(VERSIONS, `${hash.replace(/[^0-9a-f]/g, "")}.md`));
-
-/** Called when a take is written: keep the outline it was planned with, and version it. */
-export function snapshotOutline(runDirPath: string) {
-  const text = readText(OUTLINE_FILE);
-  if (!text) return;
-  writeFileSync(join(runDirPath, "outline.md"), text, "utf8");
-  registerOutline(text);
-}
-
-// ── Rewards ─────────────────────────────────────────────────────────
-
-/**
- * One-shot score, 0-100: the share of clips you kept (a 👎 on a finished clip counts as a drop),
- * x0.85 if the take wasn't approved, x0.9 per clip whose edges you nudged, x0.95 per comment on a
- * clip you didn't 👍 (up to 6). Unreviewed takes aren't scored.
- */
-export function takeOutcome(r: ReturnType<typeof listRuns>[number]): TakeOutcome {
-  const rv = readReview(r.id);
-  const snap = join(CLIPS_DIR, r.id, "outline.md");
-  const clips = r.clips.length;
-  const verdicts = Object.values(rv.clips);
-  const bad = (c: (typeof verdicts)[number]) => c.status === "drop" || c.rating === -1;
-  const dropped = verdicts.filter(bad).length;
-  const nudged = verdicts.filter((c) => !bad(c) && (c.nudges ?? 0) > 0).length;
-  const comments = rv.comments.filter((c) => c.by !== "agent").length +
-    verdicts.filter((c) => c.rating !== 1).reduce((n, c) => n + c.comments.filter((x) => x.by !== "agent").length, 0);
-  const rated = rv.approved || verdicts.some((c) => c.status || c.rating) || comments > 0 || nudged > 0;
-  const score = rated && clips
-    ? Math.round(100 * ((clips - dropped) / clips) * (rv.approved ? 1 : 0.85) * 0.9 ** nudged * 0.95 ** Math.min(comments, 6))
-    : null;
-  return {
-    run: r.id, videoStem: r.videoStem, created: r.created, engine: r.engine,
-    hash: existsSync(snap) ? hashText(readFileSync(snap, "utf8")) : null,
-    clips, dropped, nudged, comments, approved: rv.approved, rated, score,
-  };
-}
-
-export type CoachState = {
-  current: string;
-  versions: (OutlineVersion & { label: string; takes: number; rated: number; mean: number | null })[];
-  outcomes: Record<string, { score: number | null; hash: string | null }>;
-  pending: Proposal | null;
-  proposals: Omit<Proposal, "outline">[];
-  rubric: (Rubric & { fresh: boolean }) | null;
-  scorecard: Scorecard | null;
-};
-
-export function coachState(): CoachState {
-  const current = registerOutline(readText(OUTLINE_FILE));
-  const outcomes = listRuns().map(takeOutcome);
-  const versions = readLedger().map((v, i) => {
-    const mine = outcomes.filter((o) => o.hash === v.hash);
-    const scored = mine.filter((o) => o.score !== null);
-    return {
-      ...v, label: `v${i + 1}`, takes: mine.length, rated: scored.length,
-      mean: scored.length ? Math.round(scored.reduce((n, o) => n + o.score!, 0) / scored.length) : null,
-    };
+## How the finished clips did on the check rules (followed on all clips · on clips you kept · on clips you dropped)
+${p.stats || "(no checked clips yet)"}
+${p.reference ? `\n## Style reference: copy what the copy guide asks for\n${p.reference}\n` : ""}${p.direction ? `\n## The editor's direction for this revision\n${p.direction}\n` : ""}
+Write up to ${p.reference ? 4 : 3} sections that should change (none if nothing should). For each:
+{"section": "exact section name", "why": "one sentence citing the evidence${p.reference ? " or the reference" : ""}", "variants": [{"key": "a", "summary": "12 words max", "text": "the full new body of the section"}, {"key": "b", ...}]}
+- Two genuinely different rewrites per section. Keep every "**Label:** value" line the section has; you may change the values.
+- Turn repeated complaints and dropped clips into explicit rules. Rules that kept clips follow and dropped clips don't are working: keep them.
+- The outline is shared across videos: no rules tied to one video. Takes marked "outline unrecorded" may have used another outline: weigh them lightly.
+Also write "diagnosis": one sentence on the biggest reason takes aren't accepted as-is yet.
+Reply with ONLY JSON: {"diagnosis": "...", "sections": [...]}`;
+  const res = await openrouter({ temperature: 0.5, ...WRITER, messages: [{ role: "user", content: prompt }] }, MODELS.plan, ctx.signal);
+  ctx.addCost(res.usage?.cost);
+  const raw = extractJson(res.content);
+  const sections = (Array.isArray(raw.sections) ? raw.sections : []).slice(0, p.reference ? 4 : 3).flatMap((x: any): Rewrites["sections"] => {
+    const s = secs.find((y) => y.name === String(x.section ?? "").trim());
+    if (!s) return [];
+    const labels = bold(s.body);
+    // A rewrite that drops one of the section's settings would break the renderer; leave it out.
+    const variants = (Array.isArray(x.variants) ? x.variants : []).slice(0, 3)
+      .map((v: any, i: number) => ({ key: String.fromCharCode(97 + i), summary: String(v.summary ?? "").slice(0, 120), text: String(v.text ?? "").trim() }))
+      .filter((v: { text: string }) => v.text.length > 20 && labels.every((l) => bold(v.text).includes(l)) && v.text !== s.body.trim());
+    return variants.length ? [{ section: s.name, why: String(x.why ?? "").slice(0, 300), variants }] : [];
   });
-  const proposals = listProposals();
-  return {
-    current, versions,
-    outcomes: Object.fromEntries(outcomes.map((o) => [o.run, { score: o.score, hash: o.hash }])),
-    pending: proposals.find((p) => p.status === "proposed" && p.parent === current) ?? null,
-    proposals: proposals.map(({ outline, ...p }) => p),
-    rubric: (() => {
-      const r = readRubric(current) ?? latestRubric();
-      return r ? { ...r, fresh: r.outline_hash === current } : null;
-    })(),
-    scorecard: latestScorecard(),
-  };
-}
-
-function latestRubric(): Rubric | null {
-  if (!existsSync(RUBRICS)) return null;
-  return readdirSync(RUBRICS).filter((x) => x.endsWith(".json")).map((x) => readJson<Rubric | null>(join(RUBRICS, x), null))
-    .filter((r): r is Rubric => !!r).sort((a, b) => b.at - a.at)[0] ?? null;
-}
-
-function listProposals(): Proposal[] {
-  if (!existsSync(PROPOSALS)) return [];
-  return readdirSync(PROPOSALS).filter((f) => f.endsWith(".json"))
-    .map((f) => readJson<Proposal | null>(join(PROPOSALS, f), null)).filter((p): p is Proposal => !!p)
-    .sort((a, b) => b.at - a.at);
-}
-export const saveProposal = (p: Proposal) => (mkdirSync(PROPOSALS, { recursive: true }), writeFileSync(join(PROPOSALS, `${p.id}.json`), JSON.stringify(p, null, 1), "utf8"), p);
-const readProposal = (id: string) => {
-  const p = readJson<Proposal | null>(join(PROPOSALS, `${id.replace(/[^\w-]/g, "")}.json`), null);
-  if (!p) throw new Error(`No outline proposal "${id}"`);
-  return p;
-};
-
-export function applyProposal(id: string) {
-  const p = readProposal(id);
-  writeFileSync(OUTLINE_FILE, p.outline, "utf8");
-  registerOutline(p.outline, "coach", { parent: p.parent, proposal: p.id });
-  p.status = "applied";
-  return saveProposal(p);
-}
-
-export function discardProposal(id: string) {
-  const p = readProposal(id);
-  p.status = "discarded";
-  return saveProposal(p);
-}
-
-export function restoreVersion(hash: string) {
-  const text = versionText(hash);
-  if (!text) throw new Error(`No outline version ${hash}`);
-  writeFileSync(OUTLINE_FILE, text, "utf8");
-  return { hash };
-}
-
-// ── Evidence ────────────────────────────────────────────────────────
-
-export const bold = (t: string) => [...t.matchAll(/\*\*([^*]+?):\*\*/g)].map((m) => m[1].trim());
-export const clipStr = (s: string, n: number) => (s.length > n ? s.slice(0, n) + "…" : s);
-
-export function takeEvidence(r: ReturnType<typeof listRuns>[number], o: TakeOutcome, label: (h: string | null) => string) {
-  const rv = readReview(r.id);
-  let data: ReturnType<typeof readClipData> | null = null;
-  try {
-    data = readClipData(join(CLIPS_DIR, r.id, "clip_script.md"));
-  } catch {}
-  const segs = data ? readTranscript(data.video) ?? [] : [];
-  const line = (t: number, first: boolean) => {
-    const inside = segs.filter((s) => s.end > t - 0.2 && s.start < t + 0.2);
-    return clipStr((first ? inside[0] : inside[inside.length - 1])?.text ?? "", 140);
-  };
-  const out = [
-    `### Take ${r.created} of "${clipStr(r.videoStem, 60)}" · ${r.engine} · outline ${label(o.hash)} · one-shot ${o.score ?? "not reviewed"}${o.approved ? " · approved" : ""}`,
-  ];
-  for (const c of r.clips) {
-    const v = rv.clips[c.id];
-    const status = (v?.status === "drop" ? "DROPPED before cutting" : v?.status === "keep" ? "kept" : o.approved ? "approved" : "unreviewed") +
-      (v?.rating === 1 ? ", 👍 after watching the finished clip" : v?.rating === -1 ? ", 👎 after watching the finished clip" : "");
-    const jev = r.jev?.clips?.[c.id];
-    const low = (jev?.rows ?? []).filter((x: any) => x.value < 0.4).map((x: any) => x.label);
-    const moves = c.edit?.segments?.map((s: any) => s.zoom ?? "none").join("/") ?? "";
-    out.push(
-      `- Clip ${c.id} "${clipStr(c.title, 60)}" ${(c.end - c.start).toFixed(0)}s: ${status}${v?.nudges ? `, edges nudged ${v.nudges}x` : ""}` +
-        `${jev ? `, Jev overall ${Math.round(jev.overall * 100)}, tone ${jev.tone?.key}${low.length ? `, low: ${low.join(", ")}` : ""}` : ""}` +
-        `${moves ? `, moves ${moves}${c.edit?.transitions?.length ? ` via ${c.edit.transitions.join("/")}` : ""}` : ""}`,
-      `  opens "${line(c.edit?.segments?.[0]?.start ?? c.start, true)}" · ends "${line(c.edit?.segments?.at(-1)?.end ?? c.end, false)}"`,
-      ...(c.file && readWatch(r.id, c.id) ? [`  finished clip: ${watchSummary(readWatch(r.id, c.id))}`] : []),
-      ...(v?.comments ?? []).filter((x) => x.by !== "agent").map((x) => `  your comment: "${clipStr(x.text, 240)}"`),
-    );
-  }
-  for (const x of rv.comments.filter((x) => x.by !== "agent")) out.push(`- Comment on the whole take: "${clipStr(x.text, 300)}"`);
-  return out.join("\n");
-}
-
-// ── The coach ───────────────────────────────────────────────────────
-
-/** Evidence for a coach run: this video's recent takes (reviewed first), plus a few reviewed takes from other videos. */
-export function selectTakes(input: { video?: string }) {
-  const state = coachState();
-  const label = (h: string | null) => (h ? state.versions.find((v) => v.hash === h)?.label ?? "?" : "unrecorded");
-  const cur = state.versions.find((v) => v.hash === state.current)!;
-  const runs = listRuns();
-  const outcomes = new Map(runs.map((r) => [r.id, takeOutcome(r)]));
-  const stem = input.video?.replace(/\.[^.]+$/, "");
-  const byRecency = (a: typeof runs[number], b: typeof runs[number]) => b.created.localeCompare(a.created);
-  const here = runs.filter((r) => !stem || r.videoStem === stem).sort((a, b) => Number(outcomes.get(b.id)!.rated) - Number(outcomes.get(a.id)!.rated) || byRecency(a, b)).slice(0, 4);
-  const elsewhere = runs.filter((r) => !here.includes(r) && outcomes.get(r.id)!.rated).sort(byRecency).slice(0, 2);
-  const takes = [...here, ...elsewhere];
-  if (!takes.length) throw new Error("No takes yet. Plan and review a take first; the coach learns from how it went.");
-  return { state, label, cur, takes, outcomes, ratedCount: takes.filter((r) => outcomes.get(r.id)!.rated).length };
-}
-
-/** How one clip went for you: 1 good, 0 bad, 0.5 kept but corrected or commented on, null unreviewed. */
-export function clipReward(runId: string, clipId: number): number | null {
-  const rv = readReview(runId);
-  const v = rv.clips[clipId];
-  if (v?.status === "drop" || v?.rating === -1) return 0;
-  if (v?.rating === 1) return 1;
-  const touched = (v?.nudges ?? 0) > 0 || (v?.comments ?? []).some((c) => c.by !== "agent");
-  if (touched) return 0.5;
-  if (v?.status === "keep" || rv.approved) return 1;
-  return null;
+  ctx.log(`${res.model} via ${res.provider ?? "OpenRouter"}: ${res.usage?.completion_tokens ?? "?"} tokens`);
+  return { diagnosis: String(raw.diagnosis ?? "").slice(0, 400), sections, model: res.model, cost: res.usage?.cost ?? 0 };
 }
 
 export async function coachOutline(ctx: JobContext, input: { video?: string; direction?: string }) {
-  const outline = readText(OUTLINE_FILE);
-  if (!outline) throw new Error("No clip_outline.md to improve");
-  const { state, label, cur, takes, outcomes, ratedCount } = selectTakes(input);
-  ctx.log(`Coaching outline ${cur.label} from ${takes.length} take(s), ${ratedCount} reviewed${input.direction ? `, with your direction` : ""}`);
-  if (!ratedCount) ctx.log("None of these takes are reviewed yet, so there's little signal. Keep/drop, nudge or comment on clips first for better proposals.", "warn");
-
-  // Retrieval: the best-scoring other versions, and what earlier proposals did to the score.
-  const best = state.versions.filter((v) => v.hash !== state.current && v.mean !== null).sort((a, b) => b.mean! - a.mean!).slice(0, 2);
-  const tried = state.proposals.filter((p) => p.status === "applied").slice(0, 6).map((p) => {
-    const before = state.versions.find((v) => v.hash === p.parent);
-    const after = state.versions.find((v) => v.hash === p.hash);
-    return `- ${before?.label ?? "?"} → ${after?.label ?? "?"}: "${clipStr(p.hypothesis, 200)}" · one-shot ${before?.mean ?? "n/a"} → ${after?.mean ?? "not yet reviewed"} (${after?.rated ?? 0} reviewed takes)`;
-  });
-  const history = historyPaths(outline).map((p) => readText(p)).join("\n").slice(-2500);
-
-  const prompt = `You improve a clip outline: the instructions a clipping pipeline follows to pick and edit short vertical clips from long videos.
-Goal: the pipeline should one-shot it. The first take should be approved with no clips dropped, no edges nudged and no comments.
-The one-shot score (0-100) is the share of clips kept (a thumbs-down on a finished clip counts as dropped), x0.85 if not approved, x0.9 per nudged clip, x0.95 per comment.
-A thumbs up or down after watching the finished clip is the strongest signal; approval alone mostly means "worth cutting".
-
-How the outline is used: an LLM reads it once and writes the questions a scoring model (Jev) asks about every candidate opening line, closing line and clip.
-Jev also chooses camera moves and transitions per part from the allowed lists. The Editor reads the bold "**Label:** value" settings literally.
-So be concrete: describe what a good opening line, ending and clip sound like in this material, and what to avoid.
-
-Rules:
-- Change only what the evidence supports. Keep everything that works. Small, targeted edits beat rewrites.
-- Keep every "## " section and every "**Label:** value" setting, in the same format. You may change their values.
-- Turn repeated complaints and dropped clips into explicit rules (what to avoid, what must be present).
-- If an earlier change lowered the score, don't repeat it. If a best version did something better, borrow it.
-- The outline is shared: it is used for whichever video is planned next. Don't add rules tied to one video unless the direction asks for it.
-- Takes marked "outline unrecorded" may have been planned with a different outline. Weigh them lightly and don't infer from differences between them.
-${input.direction ? `- The editor's direction for this revision: "${input.direction}"\n` : ""}
-## Current outline (${cur.label}, one-shot ${cur.mean ?? "not yet scored"} over ${cur.rated} reviewed takes)
-${outline}
-
-## Evidence from takes
-${takes.map((r) => takeEvidence(r, outcomes.get(r.id)!, label)).join("\n\n")}
-
-${best.length ? `## Best-scoring earlier outline versions\n${best.map((v) => `### ${v.label} (one-shot ${v.mean} over ${v.rated} takes)\n${clipStr(versionText(v.hash), 3500)}`).join("\n\n")}\n` : ""}
-${tried.length ? `## Earlier coach changes and what they did\n${tried.join("\n")}\n` : ""}
-${history.trim() ? `## Clip history log (posted clips and their performance)\n${history}\n` : ""}
-Reply with ONLY JSON:
-{"hypothesis": "one sentence: what this revision should fix and why",
- "keep": "one sentence: what is working and was left alone",
- "changes": [{"section": "section name", "change": "what you changed", "evidence": "which take/clip/comment supports it"}],
- "outline": "the full revised outline markdown"}`;
-
-  ctx.progress(0.1, `asking ${MODELS.plan[0]}`);
+  const outline = readText(OUTLINE_FILE).replace(/\r\n/g, "\n");
+  if (!outline) throw new Error("The outline is empty");
+  const hash = hashText(outline);
+  await ensureReference(ctx);
+  const { cur, takes, outcomes, label, ratedCount } = selectTakes(input);
+  const ref = readReference();
+  const refText = ref?.analysis ? referenceText(ref) : "";
   let cost = 0;
-  let raw: any;
-  let model = MODELS.plan[0];
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    const res = await openrouter({ temperature: 0.4, messages: [{ role: "user", content: prompt }] }, MODELS.plan, ctx.signal);
-    ctx.addCost(res.usage?.cost);
-    cost += res.usage?.cost ?? 0;
-    model = res.model;
-    try {
-      raw = extractJson(res.content);
-      if (typeof raw?.outline === "string" && raw.outline.trim().length > outline.length * 0.5) break;
-      throw new Error("the revised outline was missing or too short");
-    } catch (e) {
-      if (attempt === 2) throw new Error(`The coach's reply wasn't usable: ${e instanceof Error ? e.message : e}`);
-      ctx.log(`Retrying: ${e instanceof Error ? e.message : e}`, "warn");
-    }
+  let calls = 0;
+  const addCost = (c?: number) => ((cost += c ?? 0), ctx.addCost(c));
+  ctx.log(`Coaching outline ${cur.label} from ${takes.length} take(s), ${ratedCount} reviewed${refText ? ", and the style reference" : ""}`);
+
+  // 1-2. Evidence and per-rule stats from Check (clips rated blind to your verdict).
+  const rows = takes.flatMap((t) => {
+    const ck = readCheck(t.id);
+    if (!ck) return [];
+    return Object.entries(ck.clips).map(([id, c]) => ({ reward: clipReward(t.id, Number(id)), rules: c.rules, defs: ck.rules }));
+  });
+  const defs = new Map<string, { key: string; section: string; rule: string }>();
+  for (const r of rows) for (const d of r.defs) defs.set(d.key, d);
+  const rules: Scorecard["rules"] = [...defs.values()].map((d) => {
+    const on = rows.filter((r) => d.key in r.rules);
+    const all = on.map((r) => r.rules[d.key]);
+    const good = on.filter((r) => r.reward !== null && r.reward >= 0.75).map((r) => r.rules[d.key]);
+    const bad = on.filter((r) => r.reward !== null && r.reward <= 0.25).map((r) => r.rules[d.key]);
+    return { key: d.key, section: d.section, rule: d.rule, followed: +(mean(all) ?? 0).toFixed(2), good: mean(good), bad: mean(bad), n: all.length };
+  }).filter((r) => r.n > 0);
+  const weak = [...rules].sort((a, b) => a.followed - b.followed).filter((r) => r.followed < 0.5);
+  if (rows.length && !rows.some((r) => r.reward !== null && r.reward <= 0.25)) {
+    ctx.log("No dropped clips in the evidence, so Jev can't tell which rules predict your verdict. Drop the clips you don't like to sharpen it.", "warn");
   }
-  const revised = String(raw.outline).replace(/\r\n/g, "\n").trim() + "\n";
-  const missing = bold(outline).filter((l) => !bold(revised).includes(l));
-  const lost = [...outline.matchAll(/^## (.+)$/gm)].map((m) => m[1].trim()).filter((s) => !revised.includes(`## ${s}`));
-  const warnings = [
-    ...(missing.length ? [`Settings removed: ${missing.join(", ")}`] : []),
-    ...(lost.length ? [`Sections removed: ${lost.join(", ")}`] : []),
-  ];
-  const p: Proposal = {
-    id: `p${Date.now().toString(36)}`, at: Date.now(), status: "proposed",
-    parent: state.current, hash: hashText(revised), outline: revised,
-    changes: (Array.isArray(raw.changes) ? raw.changes : []).slice(0, 12).map((c: any) => ({ section: String(c.section ?? ""), change: String(c.change ?? ""), evidence: String(c.evidence ?? "") })),
-    hypothesis: String(raw.hypothesis ?? "").slice(0, 400), keep: String(raw.keep ?? "").slice(0, 400), warnings,
-    takes: takes.map((r) => r.id), direction: input.direction, model, cost, mode: "llm",
+  const stats = rules.map((r) => `- [${r.section || "general"}] ${r.rule}: ${pct(r.followed)} · kept ${r.good === null ? "n/a" : pct(r.good)} · dropped ${r.bad === null ? "n/a" : pct(r.bad)} (${r.n} clips)`).join("\n");
+
+  // 3. The LLM writes the options.
+  ctx.progress(0.2, "LLM writing rewrites");
+  const evidence = takes.map((t) => takeEvidence(t, outcomes.get(t.id)!, label)).join("\n\n");
+  const rw = await writeRewrites({ ...ctx, addCost }, { outline, evidence, stats, reference: refText, direction: input.direction }).catch((e): Rewrites => {
+    if (ctx.signal.aborted) throw e;
+    ctx.log(`The LLM rewrites failed (${e instanceof Error ? e.message : e}); saving the scorecard without proposing changes`, "warn");
+    return { diagnosis: "", sections: [], model: MODELS.plan[0], cost: 0 };
+  });
+  ctx.log(`${rw.model}: ${rw.sections.length ? rw.sections.map((s) => `${s.section} (${s.variants.length} rewrites)`).join(", ") : "no section needs changing"}`);
+
+  // 4. Jev chooses per section.
+  ctx.progress(0.6, "Jev choosing");
+  const verdicts = {
+    kept: takes.reduce((n, t) => n + t.clips.filter((c) => (clipReward(t.id, c.id) ?? 0) >= 0.75).length, 0),
+    dropped: takes.reduce((n, t) => n + t.clips.filter((c) => clipReward(t.id, c.id) === 0).length, 0),
   };
-  if (p.hash === state.current) throw new Error("The coach proposed no changes. Review more clips (keep, drop, nudge, comment) to give it signal.");
-  saveProposal(p);
-  ctx.log(`Proposed ${p.changes.length} change(s): ${p.hypothesis}`);
-  for (const w of warnings) ctx.log(w, "warn");
-  ctx.progress(1, "proposal ready");
-  return { proposal: p.id, changes: p.changes.length, hypothesis: p.hypothesis, warnings };
+  const feedback = takes.flatMap((t) => {
+    const rv = readReview(t.id);
+    return [...rv.comments, ...Object.values(rv.clips).flatMap((c) => c.comments)].filter((c) => c.by !== "agent").map((c) => clipStr(c.text, 200));
+  }).slice(0, 12);
+  const secs = sectionsOf(outline);
+  const decisions: Scorecard["decisions"] = [];
+  await Promise.all(rw.sections.map(async (s) => {
+    const current = secs.find((x) => x.name === s.section);
+    if (!current) return;
+    const criteria: Record<string, string> = { keep: `Keep the current text: ${clipStr(current.body, 500)}` };
+    for (const v of s.variants) criteria[v.key] = `${v.summary}: ${clipStr(v.text, 500)}`;
+    const d = await decide({
+      section: s.section,
+      why_it_may_need_changing: s.why,
+      diagnosis: rw.diagnosis,
+      rules_in_this_section: rules.filter((r) => r.section === s.section).map((r) => ({ rule: r.rule, followed: pct(r.followed), on_kept_clips: r.good === null ? "n/a" : pct(r.good), on_dropped_clips: r.bad === null ? "n/a" : pct(r.bad) })),
+      rules_followed_least: weak.slice(0, 5).map((r) => `${r.rule} (${pct(r.followed)})`),
+      your_verdicts: verdicts,
+      your_comments: feedback,
+      ...(input.direction ? { your_direction: input.direction } : {}),
+      ...(ref?.analysis ? { style_reference: { copy_guide: ref.guide || "copy the overall style", summary: ref.analysis.profile.summary, traits: ref.analysis.profile.traits.filter((t) => t.section === s.section || !secs.some((x) => x.name === t.section)).map((t) => t.trait) } } : {}),
+    }, {
+      version: {
+        type: "choice",
+        instructions: ref?.analysis
+          ? "Which version of this outline section makes the next take match the style reference in what the copy guide asks for, while staying likely to be accepted as-is with every clip kept?"
+          : "Which version of this outline section makes the next take most likely to be accepted as-is, with every clip kept?",
+        criteria,
+      },
+    }, ctx.signal);
+    addCost(d.cost);
+    calls++;
+    const a = d.answers.version;
+    if (a?.type !== "choice") return;
+    const v = s.variants.find((x) => x.key === a.choice);
+    const p = a.probabilities[a.choice] ?? a.confidence;
+    const second = Math.max(0, ...Object.entries(a.probabilities).filter(([k]) => k !== a.choice).map(([, x]) => x));
+    const applied = !!v && p >= 0.4 && p - second >= 0.1;
+    decisions.push({ section: s.section, chosen: a.choice, summary: v?.summary ?? "keep the current text", p, options: a.probabilities, applied });
+  }));
+  decisions.sort((a, b) => secs.findIndex((x) => x.name === a.section) - secs.findIndex((x) => x.name === b.section));
+
+  // 5. Assemble the proposal.
+  ctx.progress(0.9, "assembling");
+  let revised = outline;
+  for (const d of decisions.filter((x) => x.applied)) {
+    const v = rw.sections.find((s) => s.section === d.section)!.variants.find((x) => x.key === d.chosen)!;
+    revised = replaceSection(revised, d.section, v.text);
+  }
+  const sc: Scorecard = { id: `s${Date.now().toString(36)}`, at: Date.now(), outline_hash: hash, cost, calls, diagnosis: rw.diagnosis, rules, decisions };
+  const changed = decisions.filter((d) => d.applied);
+  if (changed.length && hashText(revised) !== hash) {
+    const missing = bold(outline).filter((l) => !bold(revised).includes(l));
+    const p: Proposal = {
+      id: `p${Date.now().toString(36)}`, at: Date.now(), status: "proposed", parent: hash, hash: hashText(revised), outline: revised.trim() + "\n",
+      changes: changed.map((d) => {
+        const s = rw.sections.find((x) => x.section === d.section)!;
+        const inSec = rules.filter((r) => r.section === d.section);
+        return {
+          section: d.section, change: d.summary,
+          evidence: `Jev ${pct(d.p)} for this rewrite vs ${pct(d.options.keep ?? 0)} to keep it. ${s.why}${inSec.length ? ` Rules here followed ${inSec.map((r) => pct(r.followed)).join(", ")}.` : ""}`,
+        };
+      }),
+      hypothesis: rw.diagnosis || `Jev picked ${changed.length} rewrite(s)`,
+      keep: decisions.filter((d) => !d.applied).map((d) => `${d.section} (keep ${pct(d.options.keep ?? d.p)})`).join(", ") || "Every section the evidence didn't flag.",
+      warnings: missing.length ? [`Settings removed: ${missing.join(", ")}`] : [],
+      takes: takes.map((t) => t.id), direction: input.direction, model: `${rw.model} + Jev`, cost, scorecard: sc.id,
+    };
+    saveProposal(p);
+    sc.proposal = p.id;
+    ctx.log(`Jev picked ${changed.length} rewrite(s): ${changed.map((d) => `${d.section} (${pct(d.p)})`).join(", ")}`);
+  } else {
+    ctx.log(rw.sections.length ? "Jev kept every section as it is" : "Nothing in the evidence calls for an outline change");
+  }
+  saveScorecard(sc);
+  ctx.progress(1, "coached");
+  return { scorecard: sc.id, proposal: sc.proposal ?? null, calls, cost };
 }

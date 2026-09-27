@@ -187,48 +187,7 @@ async function labelBatch(ctx: JobContext, shots: Shot[], cache: string) {
 }
 
 /** Build (or finish) the vision transcript. Progress is reported on 0..1 of this phase. */
-/** Labels submitted by the browser agent in WebMCP mode. They win over model labels. */
-const agentLabelsFile = (video: string) => join(visionDir(video), "agent_labels.json");
-
-export function readAgentLabels(video: string): Record<string, Partial<Shot>> {
-  try {
-    return existsSync(agentLabelsFile(video)) ? JSON.parse(readFileSync(agentLabelsFile(video), "utf8")) : {};
-  } catch {
-    return {};
-  }
-}
-
-/** Merge labels from the browser agent into the stored vision transcript. */
-export function saveAgentLabels(video: string, labels: (Partial<Shot> & { id: number })[]) {
-  const vt = readVision(video);
-  if (!vt) throw new Error("No shots yet. Prepare the video first (shot detection runs without any model).");
-  const known = new Set(vt.shots.map((s) => s.id));
-  const merged = readAgentLabels(video);
-  let accepted = 0;
-  for (const l of labels) {
-    if (!known.has(l.id)) continue;
-    merged[l.id] = {
-      kind: SHOT_KINDS.includes(l.kind as any) ? l.kind : "other",
-      desc: String(l.desc ?? "").slice(0, 120),
-      text: String(l.text ?? "").slice(0, 200),
-      ...(l.subject_x !== undefined ? { subject_x: Math.min(1, Math.max(0, Number(l.subject_x))) } : {}),
-      ...(l.people !== undefined ? { people: Math.max(0, Math.round(Number(l.people))) } : {}),
-    };
-    accepted++;
-  }
-  writeFileSync(agentLabelsFile(video), JSON.stringify(merged), "utf8");
-  vt.shots = vt.shots.map((s) => ({ ...s, ...merged[s.id] }));
-  writeFileSync(visionFile(video), JSON.stringify(vt), "utf8");
-  return { accepted, ignored: labels.length - accepted, labelled: vt.shots.filter((s) => s.kind).length, total: vt.shots.length };
-}
-
-/**
- * Build (or finish) the vision transcript. Progress is reported on 0..1 of this phase.
- * With `label: false` (WebMCP mode) no model is called: shots and frames are still built, cached
- * model labels are reused, and the browser agent can add labels through label_shots.
- */
-export async function visionTranscript(ctx: JobContext, video: string, opts: { label?: boolean } = {}): Promise<VisionTranscript> {
-  const label = opts.label !== false;
+export async function visionTranscript(ctx: JobContext, video: string): Promise<VisionTranscript> {
   const dir = visionDir(video);
   mkdirSync(join(dir, "frames"), { recursive: true });
   mkdirSync(join(dir, "batches"), { recursive: true });
@@ -237,21 +196,17 @@ export async function visionTranscript(ctx: JobContext, video: string, opts: { l
   const shots: Shot[] = shotsFromCuts(cuts, total).map((s) => ({ ...s, frame: join(dir, "frames", `shot_${String(s.id).padStart(4, "0")}.jpg`) }));
   ctx.log(`${cuts.length} cuts → ${shots.length} shots to label (flashes merged, long shots sampled every ${MAX_SHOT}s)`);
   await grabFrames(ctx, video, shots);
-  // Faces are measured locally (no cloud), so framing works in every engine mode.
+  // Faces are measured locally (no cloud model involved).
   const aspect = await probeAspect(video);
   const faces = await detectFaces({ ...ctx, progress: (_v, stage) => ctx.progress(0.85, stage && `framing: ${stage}`) }, video, dir, shots);
 
   const batches: Shot[][] = [];
   for (let i = 0; i < shots.length; i += BATCH) batches.push(shots.slice(i, i + BATCH));
-  ctx.log(label ? `Labelling frames with ${MODELS.vision} in ${batches.length} batches` : "Skipping model labels (WebMCP mode): reusing cached labels only");
+  ctx.log(`Labelling frames with ${MODELS.vision} in ${batches.length} batches`);
   let done = 0;
   const labels = await pool(batches, 6, async (b) => {
     const key = `batch_${String(b[0].id).padStart(4, "0")}_${b.length}.json`;
     const cache = join(dir, "batches", key);
-    if (!label) {
-      ctx.progress(0.85 + 0.15 * (++done / batches.length), `shots ${done}/${batches.length}`);
-      return existsSync(cache) ? (JSON.parse(readFileSync(cache, "utf8")) as Record<string, Partial<Shot>>) : {};
-    }
     const r = await labelBatch(ctx, b, cache).catch((e) => {
       if (ctx.signal.aborted) throw e;
       ctx.log(`frames ${b[0].id}-${b[b.length - 1].id} unlabelled: ${e instanceof Error ? e.message : e}`, "warn");
@@ -260,7 +215,7 @@ export async function visionTranscript(ctx: JobContext, video: string, opts: { l
     ctx.progress(0.85 + 0.15 * (++done / batches.length), `labelling ${done}/${batches.length}`);
     return r;
   }, ctx.signal);
-  const byId = Object.assign({}, ...labels, readAgentLabels(video)) as Record<string, Partial<Shot>>;
+  const byId = Object.assign({}, ...labels) as Record<string, Partial<Shot>>;
 
   const cleaned = stripOverlays(shots.map((s) => {
     const fr = planFraming(faces[s.id] ?? [], aspect);

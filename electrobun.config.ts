@@ -2,8 +2,8 @@ import type { ElectrobunConfig } from "electrobun";
 
 export default {
   app: {
-    name: "Clipdesk",
-    identifier: "dev.clipdesk.cuttingroom",
+    name: "mrClipper",
+    identifier: "dev.mrclipper.app",
     version: "0.1.0",
   },
   build: {

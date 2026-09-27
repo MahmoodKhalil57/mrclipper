@@ -7,8 +7,6 @@ import { rel, transcriptDir } from "../library";
 import { fmt, openrouter, pool, probeDuration, run, sleep } from "../lib";
 import { alignChunk, splitLong, type TimedSegment, type Word } from "./align";
 import { visionTranscript } from "./vision";
-import { assertCloud, engineSetting } from "../cloud";
-import { transcriptFromCaptions } from "./captions";
 
 export type TranscribeInput = {
   video: string; model?: string; chunk_seconds?: number; workers?: number;
@@ -140,7 +138,6 @@ async function transcribeChunk(ctx: JobContext, chunk: string, model: string, re
 export async function timeChunk(ctx: JobContext, chunk: string, retries = 3): Promise<Word[]> {
   const cache = chunk.replace(/\.mp3$/, ".words.json");
   if (existsSync(cache)) return JSON.parse(readFileSync(cache, "utf8"));
-  assertCloud("Speech-to-text timing");
   let last: unknown;
   for (let attempt = 1; attempt <= retries; attempt++) {
     ctx.signal.throwIfAborted();
@@ -173,40 +170,6 @@ export async function timeChunk(ctx: JobContext, chunk: string, retries = 3): Pr
 
 const ms = (t: number) => Math.round(t * 1000) / 1000;
 
-/**
- * WebMCP mode: no hosted model. Keep an existing transcript; otherwise build one from YouTube's
- * captions. Then shot detection and frames (deterministic) for the vision transcript.
- */
-async function prepareDeterministic(ctx: JobContext, video: string, input: TranscribeInput) {
-  const outDir = transcriptDir(video);
-  mkdirSync(outDir, { recursive: true });
-  let audio: string;
-  const existing = readTranscriptFile(outDir);
-  if (existing) {
-    audio = `kept existing transcript (${existing.length} lines)`;
-    ctx.log(`Keeping the existing audio transcript (${existing.length} lines); nothing is re-transcribed in WebMCP mode`);
-  } else {
-    ctx.progress(0.05, "fetching captions");
-    const segments = await transcriptFromCaptions(ctx, video);
-    writeFileSync(join(outDir, "transcript.json"), JSON.stringify(segments), "utf8");
-    writeFileSync(join(outDir, "transcript.txt"), segments.map((s) => `[${fmt(s.start, "srt").replace(",", ".")}] ${s.text}`).join("\n"), "utf8");
-    writeFileSync(join(outDir, "transcript.srt"), segments.map((s, n) => `${n + 1}\n${fmt(s.start, "srt")} --> ${fmt(s.end, "srt")}\n${s.text}\n`).join("\n"), "utf8");
-    audio = `YouTube captions (${segments.length} lines)`;
-  }
-  let vision: { shots: number; labelled: number } | { error: string } | undefined;
-  if (input.vision !== false) {
-    try {
-      const vt = await visionTranscript({ ...ctx, progress: (v, stage) => ctx.progress(0.2 + 0.79 * v, stage && `vision: ${stage}`) }, video, { label: false });
-      vision = { shots: vt.shots.length, labelled: vt.shots.filter((s) => s.kind).length };
-    } catch (e) {
-      if (ctx.signal.aborted) throw e;
-      vision = { error: e instanceof Error ? e.message : String(e) };
-      ctx.log(`Vision (shots) failed: ${vision.error}`, "warn");
-    }
-  }
-  return { mode: "webmcp", audio, vision, transcript: rel(join(outDir, "transcript.json")) };
-}
-
 function readTranscriptFile(dir: string): unknown[] | null {
   const f = join(dir, "transcript.json");
   try {
@@ -217,7 +180,6 @@ function readTranscriptFile(dir: string): unknown[] | null {
 }
 
 export async function transcribe(ctx: JobContext, video: string, input: TranscribeInput) {
-  if (engineSetting() === "webmcp") return prepareDeterministic(ctx, video, input);
   const model = input.model ?? MODELS.transcribe;
   const chunkSeconds = input.chunk_seconds ?? 120;
   const total = await probeDuration(video);
@@ -269,10 +231,13 @@ export async function transcribe(ctx: JobContext, video: string, input: Transcri
     const chunkEnd = Math.min(offset + chunkSeconds, total);
     if (perChunk[i]) {
       for (const s of perChunk[i]) {
-        segments.push({
-          start: ms(offset + s.start), end: ms(offset + s.end), text: s.text, timing: "aligned",
-          words: s.words!.map((w) => ({ w: w.w, start: ms(offset + w.start), end: ms(offset + w.end) })),
-        });
+        // An aligned chunk can still have lines kept as estimates (too slow for their words, e.g. a song).
+        segments.push(s.words?.length
+          ? {
+              start: ms(offset + s.start), end: ms(offset + s.end), text: s.text, timing: "aligned",
+              words: s.words.map((w) => ({ w: w.w, start: ms(offset + w.start), end: ms(offset + w.end) })),
+            }
+          : { start: ms(offset + s.start), end: 0, text: s.text, timing: "estimated" });
       }
     } else {
       for (const s of chunkSegs) segments.push({ start: Math.min(offset + s.start, chunkEnd), end: 0, text: s.text, timing: "estimated" });

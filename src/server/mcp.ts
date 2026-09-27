@@ -1,19 +1,25 @@
+// The Director's crew, as three MCP servers over the same workflow the canvas shows.
+//   Transcriber   what the videos say and show, and the style reference     (read)
+//   Planner       the workflow: its state, ▶ Run, one step, the outline and brief
+//   Editor        takes: their clips, check scores and your reviews; clip edges
+// The Director never reviews clips or applies outline changes: those are yours.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { z } from "zod";
-import { startBrief, startCheck, startCoach, startDesign, startWatch, startExtract, startPlan, startTranscribe } from "./actions";
-import { coachState } from "./agents/coach";
-import { MODELS } from "./config";
-import { getJob, jobSummary, waitForJob, type AgentName } from "./jobs";
-import { feedbackDigest, readReview, readSettings } from "./review";
+import { startBrief, startCheck, startCoach, startDesign, startPick, startRefImport, startRefStyle, startRender, startTranscript } from "./actions";
+import { readBrief } from "./agents/brief";
+import { readCheck } from "./agents/check";
+import { outlineState } from "./agents/outlines";
+import { readReference, referenceText, setGuide } from "./agents/reference";
+import { adjustClipEdges } from "./agents/take";
 import { readVision } from "./agents/vision";
-import {
-  OUTLINE_FILE, historyPaths, listRuns, listVideos, readClipData, readText, readTranscript, rel,
-  resolveVideo, runDir, writeClipData,
-} from "./library";
+import { getJob, jobSummary, waitForJob, type Job } from "./jobs";
 import { fmt } from "./lib";
+import { OUTLINE_FILE, historyPaths, listRuns, listVideos, readText, readTranscript, rel, resolveVideo, runDir } from "./library";
+import { feedbackDigest, readReview } from "./review";
+import { LABEL, describeWorkflow, startWorkflow, workflowState, type NodeId } from "./workflow";
 
 type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
 
@@ -32,12 +38,14 @@ const safe =
     }
   };
 
-function statusTool(server: McpServer, name: string, agent: AgentName) {
+const started = (job: Job) => ({ job_id: job.id, status: job.status, title: job.title });
+
+function jobStatusTool(server: McpServer) {
   server.registerTool(
-    name,
+    "job_status",
     {
       description:
-        `Check a ${agent} job. Blocks up to wait_seconds (max 50) for it to finish, then returns status, ` +
+        "Check any background job (a step or a ▶ Run). Blocks up to wait_seconds (max 50) for it to finish, then returns status, " +
         "progress (0-1), stage, recent log lines, and the result when done. Poll again while status is \"running\".",
       inputSchema: { job_id: z.string(), wait_seconds: z.number().min(0).max(50).optional() },
     },
@@ -48,271 +56,236 @@ function statusTool(server: McpServer, name: string, agent: AgentName) {
   );
 }
 
+const STEPS = ["transcript", "refstyle", "brief", "pick", "design", "render", "check", "coach"] as const;
+
 export const AGENTS = {
   transcribe: {
     title: "Transcriber",
-    blurb: "Audio: Gemini text on Whisper word timings. Vision: shot changes plus a label for every shot.",
+    blurb: "What the videos say and show: word-timed transcripts, shot-by-shot vision, and the style reference's profile.",
     build(server: McpServer) {
       server.registerTool(
         "list_videos",
-        { description: "List source videos in the project with duration, transcript status and clip runs.", inputSchema: {} },
+        { description: "List source videos in the workspace with duration, transcript status and takes.", inputSchema: {} },
         safe(async () => (await listVideos()).map((v) => ({ ...v, duration: fmt(v.duration) }))),
       );
-      server.registerTool(
-        "transcribe_video",
-        {
-          description:
-            "Start transcribing a video (runs in the background, typically 1-4 minutes). Returns a job_id; " +
-            "follow up with transcribe_status. Cached chunks are reused, so re-running only redoes missing parts.",
-          inputSchema: {
-            video: z.string().describe("File name, stem, or unique part of the name such as the YouTube id"),
-            model: z.string().optional().describe(`Audio-capable OpenRouter model (default ${MODELS.transcribe})`),
-            chunk_seconds: z.number().int().min(30).max(600).optional(),
-            vision: z.boolean().optional().describe("Also build the vision transcript of what's on screen (default true)"),
-          },
-        },
-        safe(async (args: { video: string; model?: string; chunk_seconds?: number; vision?: boolean }) => {
-          const job = startTranscribe(args);
-          return { job_id: job.id, status: job.status };
-        }),
-      );
-      statusTool(server, "transcribe_status", "transcribe");
       server.registerTool(
         "read_transcript",
         {
           description: "Read transcript lines for a time window (seconds). Use it to check what's said around a clip.",
-          inputSchema: {
-            video: z.string(),
-            from_s: z.number().optional(),
-            to_s: z.number().optional(),
-            max_lines: z.number().int().max(200).optional(),
-          },
+          inputSchema: { video: z.string(), from_s: z.number().optional(), to_s: z.number().optional(), max_lines: z.number().int().max(200).optional() },
         },
         safe(({ video, from_s = 0, to_s = Infinity, max_lines = 80 }: { video: string; from_s?: number; to_s?: number; max_lines?: number }) => {
           const segs = readTranscript(resolveVideo(video));
-          if (!segs) throw new Error("No transcript yet; run transcribe_video first");
-          return segs
-            .filter((s) => s.end > from_s && s.start < to_s)
-            .slice(0, max_lines)
-            .map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`)
-            .join("\n");
+          if (!segs) throw new Error("No transcript yet; run the workflow (or the transcript step) first");
+          return segs.filter((s) => s.end > from_s && s.start < to_s).slice(0, max_lines).map((s) => `[${s.start.toFixed(1)}-${s.end.toFixed(1)}] ${s.text}`).join("\n");
         }),
       );
       server.registerTool(
         "read_vision",
         {
           description:
-            "Read the vision transcript for a time window: one line per shot with its kind (host_closeup, archival_photo, map, text_card, ...), " +
-            "a short description, on-screen text, and x (0-1) = where the main subject sits, which matters for 9:16 crops.",
+            "Read the vision transcript for a time window: one line per shot with its kind, a short description, on-screen text, " +
+            "and x (0-1) = where the main subject sits, which matters for 9:16 crops.",
           inputSchema: { video: z.string(), from_s: z.number().optional(), to_s: z.number().optional(), max_shots: z.number().int().max(200).optional() },
         },
         safe(({ video, from_s = 0, to_s = Infinity, max_shots = 60 }: { video: string; from_s?: number; to_s?: number; max_shots?: number }) => {
           const vt = readVision(resolveVideo(video));
-          if (!vt) throw new Error("No vision transcript yet; run transcribe_video (vision defaults on)");
-          return vt.shots
-            .filter((s) => s.end > from_s && s.start < to_s)
-            .slice(0, max_shots)
-            .map((s) => `[${s.start.toFixed(2)}-${s.end.toFixed(2)}] ${s.kind ?? "?"}: ${s.desc ?? ""}${s.text ? ` | text: ${s.text}` : ""} (x ${s.subject_x?.toFixed(2) ?? "?"})`)
-            .join("\n");
+          if (!vt) throw new Error("No vision transcript yet; run the workflow first");
+          return vt.shots.filter((s) => s.end > from_s && s.start < to_s).slice(0, max_shots)
+            .map((s) => `[${s.start.toFixed(2)}-${s.end.toFixed(2)}] ${s.kind ?? "?"}: ${s.desc ?? ""}${s.text ? ` | text: ${s.text}` : ""} (x ${s.subject_x?.toFixed(2) ?? "?"})`).join("\n");
         }),
       );
+      server.registerTool(
+        "read_reference",
+        { description: "The style reference (a finished clip to copy), its copy guide, and its analysed style profile and traits.", inputSchema: {} },
+        safe(() => {
+          const r = readReference();
+          if (!r) return "No style reference set.";
+          return r.analysis ? referenceText(r) : `Reference "${r.name}" (copy guide: ${r.guide || "none"}) isn't analysed yet; the Reference style step does that.`;
+        }),
+      );
+      jobStatusTool(server);
     },
   },
   plan: {
     title: "Planner",
-    blurb: "Reads the outline, clip history and transcript, then writes a clip script.",
+    blurb: "Runs the workflow: its state, ▶ Run, single steps, the outline, the brief, the style reference and the outline scores.",
     build(server: McpServer) {
       server.registerTool(
+        "workflow_status",
+        {
+          description:
+            "The workflow for a video: every node's state (ready, running, done, stale with why, waiting for the user, failed), " +
+            "what ▶ Run would do next, and the takes. Call it first to ground yourself.",
+          inputSchema: { video: z.string(), take: z.string().optional().describe("A take id; omit for the latest take") },
+        },
+        safe(({ video, take }: { video: string; take?: string }) => describeWorkflow(workflowState(video, take ?? null))),
+      );
+      server.registerTool(
+        "run_workflow",
+        {
+          description:
+            "▶ Run: do every step that isn't done, in order (transcribe, reference style, brief, then a take: pick → design → render → check), " +
+            "stopping at Review for the user. After a finished review it runs the Coach. Returns a job_id; poll job_status.",
+          inputSchema: {
+            video: z.string(),
+            take: z.string().optional(),
+            direction: z.string().optional().describe("Direction for a new take, e.g. 'focus on the buffalo section'"),
+            count: z.number().int().min(1).max(20).optional().describe("Number of clips for a new take (default: the outline's)"),
+            new_take: z.boolean().optional().describe("Make a new take even if the current one is up to date"),
+          },
+        },
+        safe((a: { video: string; take?: string; direction?: string; count?: number; new_take?: boolean }) => started(startWorkflow({ video: a.video, take: a.take, notes: a.direction, count: a.count, fresh: a.new_take }))),
+      );
+      server.registerTool(
+        "run_step",
+        {
+          description:
+            `Run one step on its own: ${STEPS.map((s) => `${s} (${LABEL[s]})`).join(", ")}. ` +
+            "pick makes a new take (optionally with direction); design, render and check need a take id. Returns a job_id; poll job_status.",
+          inputSchema: {
+            step: z.enum(STEPS),
+            video: z.string().optional(),
+            take: z.string().optional(),
+            direction: z.string().optional(),
+            count: z.number().int().min(1).max(20).optional(),
+            only: z.array(z.number().int()).optional().describe("render/check: just these clip ids"),
+          },
+        },
+        safe((a: { step: (typeof STEPS)[number]; video?: string; take?: string; direction?: string; count?: number; only?: number[] }) => {
+          const need = (x: string | undefined, what: string) => {
+            if (!x) throw new Error(`${LABEL[a.step as NodeId]} needs a ${what}`);
+            return x;
+          };
+          switch (a.step) {
+            case "transcript": return started(startTranscript(need(a.video, "video")));
+            case "refstyle": return started(startRefStyle());
+            case "brief": return started(startBrief(need(a.video, "video")));
+            case "pick": return started(startPick({ video: need(a.video, "video"), notes: a.direction, count: a.count }));
+            case "design": return started(startDesign(need(a.take, "take")));
+            case "render": return started(startRender({ run: need(a.take, "take"), only: a.only }));
+            case "check": return started(startCheck({ run: need(a.take, "take"), only: a.only }));
+            case "coach": return started(startCoach({ video: a.video, direction: a.direction }));
+          }
+        }),
+      );
+      server.registerTool(
         "read_outline",
-        { description: "Read clip_outline.md (audience, tone, clip count/length, history files).", inputSchema: {} },
+        { description: "Read the outline: audience, tone, story and editing rules, and the settings the renderer reads.", inputSchema: {} },
         safe(() => readText(OUTLINE_FILE)),
       );
       server.registerTool(
         "update_outline",
         {
-          description: "Replace clip_outline.md with new full markdown. Keep the bold setting labels intact. Only use when the user asks to change the outline.",
+          description: "Replace the outline with new full markdown. Keep every '## ' section and '**Label:**' setting. Only when the user asks.",
           inputSchema: { content: z.string().min(50) },
         },
         safe(({ content }: { content: string }) => {
           writeFileSync(OUTLINE_FILE, content, "utf8");
-          return `Saved ${rel(OUTLINE_FILE)}`;
+          return `Saved ${rel(OUTLINE_FILE)}. The brief and the next take will follow it.`;
         }),
+      );
+      server.registerTool(
+        "read_brief",
+        { description: "The brief the LLM wrote for Jev from the outline and reference: pick questions, tones, gates, edit guidance, hook-card guidance, check rules.", inputSchema: { video: z.string() } },
+        safe(({ video }: { video: string }) => readBrief(resolveVideo(video))?.brief ?? "No brief yet for this video; the Brief step writes it."),
+      );
+      server.registerTool(
+        "read_feedback",
+        { description: "The user's notes on transcript moments and their reviews of earlier takes (kept, dropped, comments).", inputSchema: { video: z.string() } },
+        safe(({ video }: { video: string }) => feedbackDigest(resolveVideo(video)) || "No feedback yet."),
       );
       server.registerTool(
         "read_history",
-        { description: "Read previous clip attempts and performance notes referenced by the outline.", inputSchema: {} },
+        { description: "The clip history log (rendered clips and their posted performance), as referenced by the outline.", inputSchema: {} },
         safe(() => historyPaths(readText(OUTLINE_FILE)).map((p) => `## ${rel(p)}\n${readText(p).slice(-15000)}`).join("\n\n") || "No history yet."),
       );
       server.registerTool(
-        "plan_clips",
+        "set_style_reference",
         {
           description:
-            "Start planning clips for a transcribed video (background job, usually 20-90s). Writes clips/<run>/clip_script.md. " +
-            "Returns a job_id; follow up with plan_status. Optional overrides beat the outline's settings.",
-          inputSchema: {
-            video: z.string(),
-            count: z.number().int().min(1).max(20).optional(),
-            min_len: z.number().int().optional(),
-            max_len: z.number().int().optional(),
-            notes: z.string().optional().describe("Extra direction for this run, e.g. 'focus on the buffalo section'"),
-            engine: z.enum(["classic", "hybrid", "jev"]).optional().describe(
-              "Override the user's engine setting. classic = LLM writes the plan; hybrid = an LLM compiles the outline into Jev's questions, Jev scores every candidate, then the LLM titles the picks; jev = System One with fixed questions (placeholder titles).",
-            ),
-          },
+            "Copy the style of another clip: a link to a finished short (TikTok, Reels, Shorts, YouTube) and/or a copy guide saying what to copy " +
+            "(\"the captions and fast cuts\"). The workflow then analyses it and writes it into the brief. Returns a job_id when downloading.",
+          inputSchema: { url: z.string().optional(), guide: z.string().optional() },
         },
-        safe(async (args: { video: string; count?: number; min_len?: number; max_len?: number; notes?: string; engine?: "classic" | "hybrid" | "jev" }) => {
-          const job = startPlan(args);
-          return { job_id: job.id, status: job.status };
+        safe((a: { url?: string; guide?: string }) => {
+          if (a.guide !== undefined) setGuide(a.guide);
+          return a.url ? started(startRefImport(a.url)) : { reference: readReference()?.name ?? null, guide: a.guide };
         }),
-      );
-      statusTool(server, "plan_status", "plan");
-      server.registerTool(
-        "compile_brief",
-        {
-          description:
-            "Hybrid engine: have the LLM compile the outline into Jev's brief for a video (questions, weights, tones, gates, edit guidance). " +
-            "Hybrid plans reuse it until the outline changes. Background job; follow up with plan_status.",
-          inputSchema: { video: z.string() },
-        },
-        safe(({ video }: { video: string }) => ({ job_id: startBrief(video).id })),
-      );
-      server.registerTool(
-        "coach_outline",
-        {
-          description:
-            "Outline coach. It watches and listens to finished clips first (clip transcripts), then, by engine: LLM = one LLM call proposes a revised outline; " +
-            "Hybrid = an LLM writes a rubric and candidate section rewrites, Jev rates every clip on every rule and picks the rewrites; System One = a Jev scorecard only. " +
-            "Evidence is how the user reviewed takes (kept, dropped, 👍/👎, nudged, commented). The user applies proposals in the Coach node. " +
-            "Background job; follow up with plan_status.",
-          inputSchema: { video: z.string().optional(), direction: z.string().optional().describe("What the user wants the revision to focus on") },
-        },
-        safe((a: { video?: string; direction?: string }) => ({ job_id: startCoach(a).id })),
       );
       server.registerTool(
         "outline_scores",
-        {
-          description: "Outline versions with their one-shot scores (0-100: how close their takes came to approved as-is), and any pending coach proposal.",
-          inputSchema: {},
-        },
+        { description: "Outline versions with their one-shot scores (0-100: how close their takes came to accepted as-is), and the coach's pending proposal.", inputSchema: {} },
         safe(() => {
-          const s = coachState();
+          const s = outlineState();
           return {
             current: s.versions.find((v) => v.hash === s.current)?.label,
-            versions: s.versions.map(({ label, source, takes, rated, mean }) => ({ label, source, takes, rated, one_shot: mean })),
+            versions: s.versions.map(({ label, source, takes, rated, mean }) => ({ label, source, takes, reviewed: rated, one_shot: mean })),
             pending: s.pending && { id: s.pending.id, hypothesis: s.pending.hypothesis, changes: s.pending.changes },
           };
         }),
       );
-      server.registerTool(
-        "read_feedback",
-        {
-          description:
-            "Read the user's own feedback for a video: comments pinned to transcript moments, comments on runs and clips, " +
-            "and clips they kept or dropped. Check it before planning and whenever the user mentions their notes.",
-          inputSchema: { video: z.string() },
-        },
-        safe(({ video }: { video: string }) => feedbackDigest(resolveVideo(video)) || "No feedback yet."),
-      );
+      jobStatusTool(server);
     },
   },
   extract: {
     title: "Editor",
-    blurb: "Cuts clips from a clip script with ffmpeg: 9:16 crop, burned captions, history log.",
+    blurb: "Takes: their clips, edits, check scores and the user's reviews; moves clip edges when the user asks.",
     build(server: McpServer) {
       server.registerTool(
-        "list_runs",
-        {
-          description: "List clip runs (planned clip scripts) with their clips and which have been extracted.",
-          inputSchema: { video: z.string().optional().describe("Filter by video") },
-        },
+        "list_takes",
+        { description: "List takes (newest first) with their clips, whether they're rendered, and the user's verdicts.", inputSchema: { video: z.string().optional() } },
         safe(({ video }: { video?: string }) => {
           const stem = video ? basename(resolveVideo(video)).replace(/\.[^.]+$/, "") : undefined;
-          return listRuns()
-            .filter((r) => !stem || r.videoStem === stem)
-            .map((r) => {
-              const review = readReview(r.id);
-              return {
-                run: r.id, created: r.created,
-                approved: review.approved || !readSettings().requireApproval,
-                clips: r.clips.map((c) => ({
-                  id: c.id, title: c.title, start: fmt(c.start), end: fmt(c.end), extracted: !!c.file,
-                  user: review.clips[c.id]?.status ?? null,
-                })),
-              };
-            });
+          return listRuns().filter((r) => !stem || r.videoStem === stem).map((r) => {
+            const review = readReview(r.id);
+            return {
+              take: r.id, created: r.created, review_finished: review.approved,
+              clips: r.clips.map((c) => ({ id: c.id, title: c.title, start: fmt(c.start), end: fmt(c.end), rendered: !!c.file, verdict: review.clips[c.id]?.status ?? null })),
+            };
+          });
         }),
       );
       server.registerTool(
-        "read_clip_script",
-        { description: "Read the full clip_script.md of a run (hooks, reasons, transcript excerpts).", inputSchema: { run: z.string() } },
-        safe(({ run }: { run: string }) => readText(join(runDir(run), "clip_script.md"))),
+        "read_take",
+        { description: "One take in detail: each clip's hook card, parts and moves, check scores (rules followed, edge warnings) and the user's comments.", inputSchema: { take: z.string() } },
+        safe(({ take }: { take: string }) => {
+          const r = listRuns().find((x) => x.id === take);
+          if (!r) throw new Error(`No take ${take}`);
+          const ck = readCheck(take);
+          const rv = readReview(take);
+          return r.clips.map((c) => {
+            const k = ck?.clips[c.id];
+            return {
+              id: c.id, title: c.title, from: fmt(c.start), to: fmt(c.end), seconds: +(c.end - c.start).toFixed(1),
+              hook_card: c.edit?.title ?? null,
+              parts: c.edit?.segments.map((s) => `${fmt(s.start)}-${fmt(s.end)} ${s.zoom ?? "none"}${s.look ? ` ${s.look}` : ""}`) ?? [],
+              transitions: c.edit?.transitions ?? [],
+              check: k ? { rules_followed: k.followed, missed: (ck!.rules ?? []).filter((q) => (k.rules[q.key] ?? 1) < 0.4).map((q) => q.rule), edges: k.edges } : null,
+              verdict: rv.clips[c.id]?.status ?? null,
+              comments: (rv.clips[c.id]?.comments ?? []).map((x) => x.text),
+            };
+          });
+        }),
       );
       server.registerTool(
         "adjust_clip",
         {
-          description: "Change a clip's start/end (seconds from video start) in the run's clip data before (re-)extracting.",
-          inputSchema: { run: z.string(), clip_id: z.number().int(), start: z.number().optional(), end: z.number().optional() },
+          description: "Move a clip's start/end (seconds from the source's start). The next render redoes only that clip. Only when the user asks.",
+          inputSchema: { take: z.string(), clip_id: z.number().int(), start: z.number().optional(), end: z.number().optional() },
         },
-        safe(({ run, clip_id, start, end }: { run: string; clip_id: number; start?: number; end?: number }) => {
-          const script = join(runDir(run), "clip_script.md");
-          const data = readClipData(script);
-          const clip = data.clips.find((c) => c.id === clip_id);
-          if (!clip) throw new Error(`No clip ${clip_id} in ${run}`);
-          if (start !== undefined) clip.start = start;
-          if (end !== undefined) clip.end = end;
-          if (clip.end <= clip.start) throw new Error("end must be after start");
-          writeClipData(script, data);
-          return { clip_id, start: fmt(clip.start, "tenths"), end: fmt(clip.end, "tenths"), seconds: +(clip.end - clip.start).toFixed(1) };
+        safe(({ take, clip_id, start, end }: { take: string; clip_id: number; start?: number; end?: number }) => {
+          runDir(take);
+          const r = adjustClipEdges(take, clip_id, { start, end });
+          return { clip_id, start: fmt(r.start, "tenths"), end: fmt(r.end, "tenths"), seconds: +(r.end - r.start).toFixed(1), next: "run_step render (or run_workflow) to re-render it" };
         }),
       );
       server.registerTool(
-        "extract_clips",
-        {
-          description:
-            "Start cutting clips from a run with ffmpeg (background job, ~10-40s per clip). Returns a job_id; follow up with extract_status. " +
-            "Defaults: all clips except ones the user dropped, 9:16 crop when the run targets 9:16, captions off. " +
-            "Fails if the review gate is on and the user hasn't approved the run yet.",
-          inputSchema: {
-            run: z.string(),
-            only: z.array(z.number().int()).optional().describe("Clip ids to cut; omit for all"),
-            subs: z.boolean().optional().describe("Burn in captions from the transcript"),
-            vertical: z.boolean().optional().describe("Force 9:16 crop on/off"),
-          },
-        },
-        safe(async (args: { run: string; only?: number[]; subs?: boolean; vertical?: boolean }) => {
-          const job = startExtract(args);
-          return { job_id: job.id, status: job.status };
-        }),
+        "read_clip_script",
+        { description: "Read a take's full clip_script.md (hooks, reasons, transcript excerpts).", inputSchema: { take: z.string() } },
+        safe(({ take }: { take: string }) => readText(join(runDir(take), "clip_script.md"))),
       );
-      statusTool(server, "extract_status", "extract");
-      server.registerTool(
-        "watch_clips",
-        {
-          description: "Clip transcripts: listen to (Whisper) and watch (frame check + face detection) a take's finished clips, to see what was actually rendered. Background job; follow up with extract_status.",
-          inputSchema: { run: z.string() },
-        },
-        safe(({ run }: { run: string }) => ({ job_id: startWatch(run).id })),
-      );
-      server.registerTool(
-        "design_edits",
-        {
-          description:
-            "Re-run edit design on a System One or Hybrid take: Jev picks each segment's camera move and each gap's transition from the outline's " +
-            "allowed options (Hybrid also re-writes titles). Unapproves the take if it was approved. Background job; follow up with extract_status.",
-          inputSchema: { run: z.string() },
-        },
-        safe(({ run }: { run: string }) => ({ job_id: startDesign(run).id })),
-      );
-      server.registerTool(
-        "check_clips",
-        {
-          description:
-            "Run a Jev (System One) pre-flight on a run's clips: scores whether each start/end is clean and suggests better lines nearby. " +
-            "Suggestions only; nothing is changed. Background job (a few seconds); follow up with extract_status. Works for any run, in either engine mode.",
-          inputSchema: { run: z.string(), only: z.array(z.number().int()).optional() },
-        },
-        safe(({ run, only }: { run: string; only?: number[] }) => ({ job_id: startCheck(run, only).id })),
-      );
+      jobStatusTool(server);
     },
   },
 } as const;
@@ -322,7 +295,7 @@ export type McpAgentKey = keyof typeof AGENTS;
 /** Stateless Streamable HTTP: a fresh server + transport per request. */
 export async function handleMcp(agent: McpAgentKey, req: Request): Promise<Response> {
   const def = AGENTS[agent];
-  const server = new McpServer({ name: `clipdesk-${agent}`, version: "1.0.0" }, { instructions: def.blurb });
+  const server = new McpServer({ name: `mrclipper-${agent}`, version: "2.0.0" }, { instructions: def.blurb });
   def.build(server);
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
   await server.connect(transport);

@@ -1,0 +1,84 @@
+/* ═══════════════════════════════════════════════════════════════════
+   Workflow v2: one colour per worker, the same anatomy on every node.
+   You (cream) · Transcriber (amber) · LLM writes (blue) · Jev judges (violet) · Code (teal)
+   ═══════════════════════════════════════════════════════════════════ */
+
+:root {
+  --who-you: #e9dcc4;
+  --who-transcriber: var(--transcribe);
+  --who-llm: #7fb4ff;
+  --who-jev: #b9a7ff;
+  --who-code: #62c3ad;
+}
+
+.gnode.who-you { --c: var(--who-you); }
+.gnode.who-transcriber { --c: var(--who-transcriber); }
+.gnode.who-llm { --c: var(--who-llm); }
+.gnode.who-jev { --c: var(--who-jev); }
+.gnode.who-code { --c: var(--who-code); }
+.job.who-you, .tray-item.who-you { --c: var(--who-you); }
+.job.who-transcriber, .tray-item.who-transcriber { --c: var(--who-transcriber); }
+.job.who-llm, .tray-item.who-llm { --c: var(--who-llm); }
+.job.who-jev, .tray-item.who-jev { --c: var(--who-jev); }
+.job.who-code, .tray-item.who-code { --c: var(--who-code); }
+.pane-kicker.who-you { color: var(--who-you); }
+.pane-kicker.who-transcriber { color: var(--who-transcriber); }
+.pane-kicker.who-llm { color: var(--who-llm); }
+.pane-kicker.who-jev { color: var(--who-jev); }
+.pane-kicker.who-code { color: var(--who-code); }
+
+/* Node anatomy */
+.gnode-kicker { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.who-tag { font: 9px var(--mono); letter-spacing: 0.04em; text-transform: none; padding: 1px 5px; border-radius: 4px; color: var(--c); background: color-mix(in oklab, var(--c) 14%, transparent); }
+.facts { display: grid; gap: 3px; }
+.facts > div { display: grid; grid-template-columns: 92px 1fr; gap: 8px; font-size: 11.5px; }
+.facts span { color: var(--faint); }
+.facts b { color: var(--ink); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gnode-reason { font-size: 11px; color: var(--muted); line-height: 1.45; }
+.gnode-reason.stale { color: var(--warn); }
+.gnode-reason.failed { color: var(--err); }
+.gnode-actions { align-items: center; }
+.gnode.s-stale { border-color: color-mix(in oklab, var(--warn) 45%, var(--line)); border-style: dashed; }
+.gnode.s-optional, .gnode.s-empty { opacity: 0.8; }
+.gnode.s-optional::before, .gnode.s-empty::before { opacity: 0.35; }
+.state-chip.s-stale { color: var(--warn); background: color-mix(in oklab, var(--warn) 12%, transparent); }
+.state-chip.s-empty { color: #1b1307; background: var(--who-you); }
+.state-chip.s-optional { color: var(--faint); background: transparent; border: 1px dashed var(--line-2); }
+.state-chip.s-locked { color: var(--faint); }
+.ref-mini video { width: 100%; max-height: 120px; object-fit: contain; border-radius: 7px; background: #000; display: block; }
+
+/* Phase columns */
+.phase-head { display: flex; align-items: baseline; gap: 10px; padding: 0 2px 8px; border-bottom: 1px solid var(--line-2); pointer-events: none; }
+.phase-n { font: 11px var(--mono); color: var(--faint); }
+.phase-name { font: italic 26px/1 var(--serif); color: var(--ink-2); }
+.react-flow__node-phase { cursor: default; }
+
+/* Wires */
+.wire.stale .react-flow__edge-path { stroke: var(--warn); stroke-dasharray: 6 5; opacity: 0.8; }
+.wire.config .react-flow__edge-path { stroke-dasharray: 2 5; }
+.wire.flowing.w-you .react-flow__edge-path { stroke: var(--who-you); }
+.wire.flowing.w-transcriber .react-flow__edge-path { stroke: var(--who-transcriber); }
+.wire.flowing.w-llm .react-flow__edge-path { stroke: var(--who-llm); }
+.wire.flowing.w-jev .react-flow__edge-path { stroke: var(--who-jev); }
+.wire.flowing.w-code .react-flow__edge-path { stroke: var(--who-code); }
+
+/* Top bar: the one Run button */
+.run-btn { display: inline-flex; align-items: center; gap: 8px; padding: 6px 14px; font-weight: 600; }
+.run-n { font: 10px var(--mono); padding: 2px 6px; border-radius: 5px; background: rgb(0 0 0 / 0.22); font-weight: 400; }
+.steps.phases li.s-stale button span { border-color: var(--warn); color: var(--warn); }
+.steps.phases li.s-ready button span { border-color: var(--ink-2); }
+
+/* Design: hook-card options with Jev's odds */
+.hooks { display: grid; gap: 4px; }
+.hook-opt { display: flex; gap: 8px; align-items: baseline; font-size: 13px; padding: 5px 8px; border-radius: 7px; border: 1px solid var(--line); color: var(--muted); }
+.hook-opt .mono { font-size: 10px; min-width: 32px; }
+.hook-opt.on { border-color: var(--who-jev); color: var(--ink); background: color-mix(in oklab, var(--who-jev) 10%, transparent); }
+
+/* Review: the finished clip next to its verdict */
+.rclip-top.tall { grid-template-columns: 150px 1fr; }
+.rclip-video { width: 100%; border-radius: 8px; background: #000; border: 1px solid var(--line); aspect-ratio: 16 / 9; object-fit: contain; display: block; }
+.rclip-video.tall { aspect-ratio: 9 / 16; }
+.rclip-video.empty { display: grid; place-items: center; color: var(--faint); font-size: 11px; aspect-ratio: 9 / 16; }
+.check-card { background: color-mix(in oklab, var(--who-jev) 5%, var(--bg)); border: 1px solid color-mix(in oklab, var(--who-jev) 25%, var(--line)); border-radius: 8px; padding: 7px 9px; margin-top: 6px; }
+.check-card .scores { display: grid; gap: 3px; }
+.cut-line.dropped { opacity: 0.55; }

@@ -1,11 +1,17 @@
 {
-  "name": "clipdesk",
+  "name": "mrclipper",
+  "description": "Turn long videos into short vertical clips: a node-graph workflow where code measures, an LLM writes, Jev judges and you decide.",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "bun": ">=1.2.15"
+  },
   "scripts": {
+    "dev": "bun scripts/dev.ts",
+    "setup": "bun scripts/setup.ts",
     "build": "bun scripts/build.ts",
     "start": "bun dist/server/main.js",
-    "dev": "bun run build && bun src/server/main.ts",
     "typecheck": "tsc --noEmit",
     "desktop": "bun run build && hutch electrobun dev",
     "vendor": "bun scripts/vendor.ts",

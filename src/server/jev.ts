@@ -6,7 +6,6 @@
 import { MODELS } from "./config";
 import { MISSING_KEY, openrouterKey } from "./key";
 import { sleep } from "./lib";
-import { assertCloud } from "./cloud";
 
 export type Question =
   | { type: "noul"; instructions: string }
@@ -29,7 +28,6 @@ export async function decide(
   signal?: AbortSignal,
   retries = 3,
 ): Promise<Decision> {
-  assertCloud("Jev");
   const key = openrouterKey();
   if (!key) throw new Error(MISSING_KEY);
   let last: unknown;

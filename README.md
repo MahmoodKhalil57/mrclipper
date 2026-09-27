@@ -1,254 +1,313 @@
-# Clipdesk
+# mrClipper
 
-A cutting room for turning long videos into short clips. One [Think](https://developers.cloudflare.com/agents/harnesses/think/) agent (the **Director**) talks to you and hands the work to three crew agents over MCP:
+mrClipper turns a long video into short vertical clips. It runs one workflow of thirteen steps in six phases, all shown as a node graph, and every step follows the same rule:
 
-| Crew | MCP endpoint | Tools |
-|---|---|---|
-| Transcriber | `/mcp/transcribe` | `list_videos`, `transcribe_video`, `transcribe_status`, `read_transcript` |
-| Planner | `/mcp/plan` | `read_outline`, `update_outline`, `read_history`, `plan_clips`, `plan_status` |
-| Editor | `/mcp/extract` | `list_runs`, `read_clip_script`, `adjust_clip`, `design_edits`, `extract_clips`, `extract_status` |
+> **Code measures, the LLM writes, Jev judges, you decide.**
 
-The crew are TypeScript ports of `transcribe.py`, `plan_clips.py` and `extract_clips.py` and read and write the same files (`transcripts/`, `clips/<run>/clip_script.md`, `clips/history.md`, `clip_outline.md`), so the Python scripts and the app can be used interchangeably.
+- **Code** does whatever can be measured or computed: transcripts' word timings, shots, faces, candidate clips, ranking, rendering, statistics.
+- **The LLM** (`z-ai/glm-5.3-flash`) writes: the brief, hook-card options, outline rewrites. It never makes the final choice.
+- **[Jev](https://openrouter.ai/typesafe)** (a System One decision model) judges: it answers typed questions (yes/no, pick one, score) with probabilities, so every choice is saved with its odds.
+- **You** give the inputs, review the finished clips, and decide whether the outline changes.
+
+If an LLM step fails, a built-in default takes its place and the workflow carries on.
+
+## Quick start
+
+You need [Bun](https://bun.sh) 1.2.15 or newer, and an [OpenRouter](https://openrouter.ai/settings/keys) key.
+
+```sh
+git clone <this repo> mrclipper
+cd mrclipper
+bun i
+bun dev
+```
+
+Open http://127.0.0.1:4477 and add your OpenRouter key when the app asks (🔑 Key in the top bar).
+
+The first `bun dev` also gets the tools mrClipper runs, into `.store/tools/`. Later runs skip this step.
+- **ffmpeg**, with libass and x264: yours from `PATH` if it has them, else a static build (gyan.dev on Windows, BtbN on Linux). On macOS, run `brew install ffmpeg` first.
+- **yt-dlp**, for link imports: yours from `PATH`, else the standalone binary.
+- **Face detection**, for 9:16 framing: the YuNet model, plus Python and OpenCV installed with [uv](https://docs.astral.sh/uv/). uv is downloaded too if you don't have it.
+
+The app starts even if one of these fails, and says what's missing; `bun run setup` tries again. Nothing else is needed: no Node, no Python, no global installs.
+
+On Windows, clone into a folder whose path is under about 150 characters. The Director keeps each conversation in a file with a long name, and Windows can't open paths over 260 characters; mrClipper warns when it starts if yours would go over.
+
+## Where things go
+
+Everything a checkout writes stays inside it, in `.store/` (gitignored):
+
+| Folder | What's in it |
+|---|---|
+| `.store/workspace/` | the **workspace**: your videos (`videos/`), `transcripts/`, `clips/`, `outlines/`, `references/`, and `clip_outline.md`, which starts as a copy of `templates/clip_outline.md` |
+| `.store/state/` | settings, thumbnails, job history, and the Director's conversations |
+| `.store/tools/` | ffmpeg, yt-dlp, the face model and its Python |
+
+To keep clips somewhere else, use **Change…** next to the workspace path in the project menu (it applies from the next start), or set `MRCLIPPER_WORKSPACE`. Delete `.store/` to start over. Settings go in `.env` (copy `.env.example`), and none are needed.
+
+A checkout from before the rename (Clipdesk) moves its `.data/` into `.store/` on its first start, and keeps using the folder above it as its workspace.
+
+## The workflow
+
+Paths in the last column are inside the workspace.
+
+| Phase | Step | Who | What it makes | Saved in |
+|---|---|---|---|---|
+| **1 Inputs** | Source video | you | the long video | `videos/` |
+| | Outline | you | who the clips are for and how to cut them | `clip_outline.md` |
+| | Reference clip | you, optional | a finished short whose style to copy | `references/<id>/` |
+| | Copy guide | you, optional | what to copy from it, in your words | `references/<id>/reference.json` |
+| **2 Understand** | Transcript | Transcriber | what's said, with measured word timings, and what's on screen, shot by shot | `transcripts/<video>/` |
+| | Reference style | Transcriber | the reference measured and described, focused on the copy guide | `references/<id>/reference.json` |
+| **3 Brief** | Brief | LLM writes | Jev's questions for picking clips, edit and hook-card guidance, and the rules every finished clip is checked on | `transcripts/<video>/brief.json` |
+| **4 Make** | Pick clips | Jev judges | a new **take**: the best clips that don't overlap | `clips/<take>/clip_script.md`, `take.json`, `jev.json` |
+| | Design edits | Jev judges | camera moves, transitions, flashbacks, the hook card (from the LLM's options), emphasis words | `clips/<take>/design.json` |
+| | Render | code | the finished 9:16 clips | `clips/<take>/*.mp4`, `render.json` |
+| | Check | Transcriber + Jev | each clip heard and watched, then rated on the brief's rules and its in and out points | `clips/<take>/check.json`, `watch/` |
+| **5 Review** | Review | you | keep or drop each clip, nudges, comments | `clips/<take>/review.json` |
+| **6 Learn** | Coach | LLM writes, Jev picks | a proposal for the next outline version, which you apply or discard | `outlines/` |
+
+The Coach's output wires back into the Outline, which closes the loop: the next take is made from the version you applied.
 
 ## Making clips
 
-1. **Add a video.** Drop a file anywhere on the window, click **+ Add video**, or paste a YouTube link (downloaded with `tools/yt-dlp.exe` into `downloads/`). Each video is a project; switch between them from the thumbnail menu in the top bar.
-2. **Follow the canvas.** Each project is a node graph: Source → Transcript → Clip plan → Edit design → Review gate → Cut clips → Clips. The Outline feeds the Planner through the **Brief** (LLM), and the **Outline coach** (LLM) loops from Clips back into the Outline. The node marked *next step* has the button to press. Wires light up and nodes show live progress (transcript chunks, per-clip cutting) while agents work.
-3. **Inspect anything.** Click a node to open what it produced:
-   - Transcript: search it, click a line to play it, pin notes for the Planner.
-   - Clip plan: switch between takes, give direction for a new take, and edit the outline or history.
-   - Review: play each clip from the source, Keep or Drop it, nudge its in/out points, and comment on a clip or the whole take.
-   - Clips: watch and download the finished files, and comment on them.
-4. **Step in.** Every running job has **■ Stop**: on its node, in the tray at the bottom of the canvas, and in the panels. Stopping the Director's current turn is the ■ in its chat. With the **Review gate** on (top bar), nothing gets cut until you approve the take, and that applies to the Director too. Your comments, notes and keep/drop decisions are saved next to the files (`clips/<run>/review.json`, `transcripts/<video>/notes.json`). The Planner reads them before every new take, and the Director reads them with `read_feedback`.
-5. **Or just ask.** The Director dock on the left drives the same crew in plain language, and the canvas updates as it works. Any comment has an *ask Director* link that sends it there.
+1. **Add a video.** Drop a file on the window, click **+ Add video**, or paste a YouTube link. Each video is a project; switch between them from the thumbnail menu in the top bar.
+2. **Check the outline.** A new workspace starts from a template. Its bold settings (clip count and length, allowed transitions and zooms, captions, colour grade) are read by the renderer.
+3. **Optionally add a style reference.** On the Reference clip node, upload a short (or paste a TikTok, Reels or Shorts link) and say what to copy from it: "the fast cuts and the two-word captions".
+4. **Press ▶ Run.** It does every step that isn't done, in order, and stops at Review. The button shows how many steps it will do; hover it to see which. **■ Stop run** stops the current step too.
+5. **Review** the finished clips. Each one plays next to its Check card (how it did on the brief's rules, and whether its edges are clean). **Keep** or **Drop** it, nudge its **In** and **Out** points, and comment. Then **Finish review**. Clips you don't drop count as kept.
+6. **Coach** the outline. Press **▶ Coach**, read the proposed diff, and then choose one:
+   - **Apply**
+   - **Apply and make a new take**
+   - **Discard**
 
-## Vertical framing
+   **Restore** brings back any earlier version.
 
-When a 16:9 video becomes 9:16, each shot gets its own framing, based on faces measured locally with OpenCV's YuNet detector (`tools/faces.py`). This needs no cloud, so it works in every engine mode. The vision transcript measures two frames per shot and picks:
+Click any node to see what it made. Every node also has its own ▶ button to run just that step, and every running job has ■ Stop: on its node, in the tray under the canvas, and in the panels.
+
+### Node states
+
+Every node is in one of these states, computed the same way for all of them from what's on disk and which jobs are running:
+
+| State | Meaning |
+|---|---|
+| add it · optional | an input you haven't given (the reference and copy guide are optional) |
+| waiting | needs an earlier step first |
+| ready | can run now |
+| running | working; ■ Stop is on the node |
+| done | up to date |
+| out of date | ▶ Run will redo it: an input changed since it was made, or a step before it runs again |
+| your turn | Review, or a Coach proposal to apply or discard |
+| failed · stopped | the last run of it failed or you stopped it |
+
+What makes each step out of date:
+- **Transcript:** it has no vision transcript, or its word timings weren't measured.
+- **Reference style:** the copy guide changed.
+- **Brief:** the outline or the style reference changed, or an update to mrClipper changed how briefs are written. It's cached per video, so re-running costs no LLM call until one of those happens.
+- **Pick clips:** the take was made from an older brief. A take never changes its inputs, so ▶ Run makes a new take. Takes made before this version of the workflow show as out of date for the same reason.
+- **Render:** a clip's edit changed, for example because you nudged an edge. Only that clip is rendered again.
+- **Check:** a clip was rendered again since it was checked.
+- **Any step after one that runs again:** for example, Check after Render, or Design, Render and Check when Run makes a new take.
+
+The Coach is ready whenever there are reviews it hasn't learned from yet. ▶ Run coaches only when nothing else is due and you've finished reviewing the latest take.
+
+## The steps in detail
+
+### Brief (LLM writes)
+
+This is the one place an LLM turns your inputs into what every judge uses. One call (about 15 s and $0.0016) reads the outline, the style reference and copy guide, your notes and feedback, and a sample of the transcript. It writes:
+- **for Pick:** questions about openers, endings and whole clips, with weights. It also sets the tone categories, which tones to prefer, and up to two safety gates (capped at 0.5; if too few clips pass, the gates relax and the rest are scored down instead of the take failing).
+- **for Design:** a "use when…" line for each allowed camera move and transition, and how hook cards should read.
+- **for Check:** 5 to 10 checkable rules from the outline, plus one per style-reference trait.
+
+If the call fails, a built-in brief made from the outline takes over.
+
+### Pick clips (Jev judges)
+
+Jev can't write a clip list, so the work is split up: code proposes candidates, Jev answers the brief's questions about each, and code ranks and picks. There are four passes:
+1. **Openers:** every line is scored as a possible opener.
+2. **Endings:** every line is scored as a possible ending.
+3. **Clips:** the best openers are paired with good endings of an allowed length. Jev judges each pair on the brief's clip questions, tone, your direction, your earlier feedback and the visuals.
+4. **Selection:** by score, with the safety gates, no overlaps, and a spread across tones. Moments used in earlier takes are scored down.
+
+On the 10-minute test video that was 493 decisions in 10 s for $0.016. The **Pick** panel has a direction field and a clip count for the next take, plus **▶ Make a new take**, which runs Pick, Design, Render and Check even when the current take is up to date.
+
+### Design edits (Jev judges; the LLM writes options)
+
+For each clip, Jev picks:
+- **a camera move** for each part, from the outline's allowed zooms, using the brief's guidance. When two parts in a row get the same move, Jev's runner-up is used if it scored at least 15%.
+- **flashbacks:** whether a part recalls an earlier moment (at least 60% sure). A flashback gets the outline's flashback look.
+- **the final beat:** whether the last part is where the moment ends (at least 60% sure). If so, the camera pulls back.
+- **a transition** for each gap, from the allowed transitions. At most one flash is kept per clip.
+- **the hook card:** one LLM call writes three options per clip in the clip's language, and Jev picks the one most likely to stop a scroller.
+- **emphasis words:** the LLM proposes up to five words from the clip, and Jev keeps up to three that carry its feeling.
+
+The panel shows every choice with Jev's odds. If the LLM call fails, the clips keep placeholder titles and no hook card.
+
+### Render (code)
+
+ffmpeg renders each clip's edit, which is an edit decision list rather than a single range:
+- **segments:** source ranges in play order, so a cold open can put the payoff first.
+- **transitions:** `cut`, `crossfade`, `dip_black`, `slide`, `zoom`, `whip`, `flash`, `iris` or `blur`.
+- **per-segment effects:** `punch_in`, `slow_push`, `ken_burns`, `zoom_out`, `drift`, speed from 0.8× to 1.5×, and a flashback look (`bw` or `sepia`).
+- **whole-clip finishing, set in the outline:** a colour grade (`subtle`, `punchy`, `warm`, `cinematic` or `nostalgic`), vignette, film grain, glow, letterbox bars, and a fade in and out.
+- **the hook card and captions:** an ASS file rendered by libass, so Arabic shaping works. Captions light up word by word from the measured word timings, and emphasis words get their own colour.
+
+Rendering runs automatically; you review the finished files. `render.json` remembers what each file was rendered from, so only clips whose edit changed are rendered again. Slow push and Ken Burns are the slowest effects, at about 1.5× real time.
+
+**Vertical framing.** When a 16:9 video becomes 9:16, each shot gets its own framing, based on faces measured locally with OpenCV's YuNet detector:
 - **crop:** one person, or everyone who fits in a 9:16 window, framed on their faces.
 - **split:** two people too far apart for one window, stacked as a split screen with each face in the upper third of its half.
-- **fit:** a group. A square window around them, or the full frame if they're spread wider, over a blurred copy of the shot.
+- **fit:** a group, shown in a square window (or the full frame if they're spread wider) over a blurred copy of the shot.
 
-The Editor splits each segment at shot cuts, so the framing changes with every cut. Audio is read continuously per segment, so the splits don't click.
-
-**Face tracking at render time.** People walk around inside a stage shot, so a fixed crop per shot ends up on an empty set or with someone half out of frame. Before rendering a vertical clip, the Editor samples faces every 0.5 s over exactly the ranges it cuts (one ffmpeg pass per shot part, local YuNet, about 3 s per clip), and turns them into a moving crop:
+People move around inside a shot, so before rendering, faces are sampled every 0.5 s over exactly the ranges being cut (about 3 s per clip). They become a moving crop:
 - It holds still inside a dead zone of 3.5% of the width.
-- It pans at up to 0.22 widths per second, so it reads as a camera operator following, not a jittery tracker.
+- It pans at up to 0.22 widths per second, like a camera operator following.
 - It stays with the current person when the group is too spread to frame.
 
-Split screens track each person separately. Tracks are cached in `clips/<run>/track/`.
+Split screens track each person separately. Zoom effects apply only to crops, because zooming a split screen or a group cut off the people at the sides. Tracks are cached in `clips/<take>/track/`.
 
-Measured faces win over a planner's `reframe_x`, which now only steers shots where no one was measured. Older takes had `reframe_x: 0.5` on every segment, which forced a centre crop. Zoom effects apply only to crops: zooming a split screen or a fitted group trimmed the people at the sides.
+### Check (Transcriber + Jev judges)
 
-On the worst flagged clips, re-rendering cut frames with a face cut by the edge from 9 to 1 and from 4 to 1 (of 14), and frames with no one in them from 7 to 2. What remains is mostly split screens that pair the wrong two people in a crowded shot: picking who's talking would need speaker detection.
+For every finished clip:
+- **Hear and see:** the Transcriber runs on the rendered file. It takes Whisper word timings on the audio, a frame every ~3 s with local face detection (is anyone cut off by the 9:16 edge?), and one cheap vision check for framing, readable captions and visible effects. It's saved in `clips/<take>/watch/` and skipped while the file is unchanged.
+- **Rules:** Jev rates the clip on every check rule in the brief, without seeing your verdict.
+- **Edges:** Jev rates whether the first and last lines are clean places to start and stop, and suggests better lines nearby. You apply a suggestion with one click in Review; Check never changes a clip by itself.
 
-One-time setup, from `app/`:
+### Review (you)
 
-```sh
-uv venv .data/py --python 3.12
-uv pip install --python .data/py/Scripts/python.exe opencv-python-headless numpy
-curl -L -o .data/models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
-```
+The Review panel plays each finished clip with its Check card and its edit as a timeline. You can:
+- **Keep** or **Drop** it.
+- **Nudge** its **In** and **Out** points. The clip goes out of date, and the next ▶ Run renders and checks just that clip again.
+- **Comment** on a clip or on the whole take.
+- **Finish review** when you're done. **Reopen** lets you change your verdicts.
 
-Without it, crops stay centred and the Transcriber logs a warning.
+Your review is the reward the Coach learns from. The **one-shot score** (0 to 100) says how close the take came to being accepted as-is:
+- It starts from the share of clips kept.
+- ×0.85 if you didn't finish the review.
+- ×0.9 per nudged clip.
+- ×0.95 per comment, counting up to six.
 
-## Creative edits
+An outline version's score is the mean over its reviewed takes.
 
-Each clip is an **edit decision list**, not a single range:
-- **segments:** source ranges in play order, so a cold open can put the payoff first
-- **a transition between each pair:** `cut`, `crossfade`, `dip_black`, `slide`, `zoom`, `whip`, `flash` (white), `iris` or `blur`
-- **per-segment effects:** `punch_in`, `slow_push`, `ken_burns`, `zoom_out` (pull back), `drift`, speed 0.8–1.5×, a horizontal reframe for the vertical crop, and a flashback look (`bw` or `sepia`)
-- **whole-clip finishing, set in the outline:** colour grade (`subtle`, `punchy`, `warm`, `cinematic`, `nostalgic`), vignette, film grain, glow, letterbox bars, and a fade in and out
-- **a hook title card**
-- **emphasis words**
+### Coach (LLM writes, Jev picks, you apply)
 
-The outline's **Story structure**, **Editing style**, **Visual effects**, **Captions style** and **Title card** sections set the rules. Their bold labels are read by the Editor: max segments, pause threshold, allowed transitions and zooms, transition length, colour grade, vignette, caption font, size, colours and position, and title duration.
+1. **Evidence:** the reviewed takes. It uses your keep or drop, nudges and comments, and each clip's Check scores.
+2. **Statistics (code):** for each check rule, how often clips follow it overall, on the clips you kept, and on the ones you dropped.
+3. **Rewrites (LLM):** two alternatives for each outline section the evidence or the style reference says should change, up to three sections (four with a reference). A rewrite that drops one of the section's bold settings is discarded, because the renderer needs them.
+4. **Choice (Jev):** per section, keep the current text or take a rewrite, given the statistics, your comments and the reference. A rewrite needs a clear win: at least 40%, and 10 points over the next option.
+5. **Proposal (code):** the revised outline, with a hypothesis and the evidence for each change. You apply it or not.
 
-- **LLM Planner:** writes the EDL per clip.
-- **Browser agent (WebMCP):** can pass one in `submit_plan`.
-- **Jev and Hybrid:** start from the deterministic default below, then the **Edit design** step picks the moves and transitions (see Crew engines).
-- **Any other plan without an EDL:** gets the deterministic default. Pauses over the threshold are removed, long stretches are cut at line boundaries every ~4–6 s, framing alternates 100/112% (jump cuts), archive photos get Ken Burns, and the crop follows the subject from the vision transcript.
+Every take saves the outline it was made from (`clips/<take>/outline.md`), and every distinct outline becomes a version in `outlines/ledger.json`. Proposals are in `outlines/proposals/` and scorecards in `outlines/scorecards/`. If the rewrite call fails, the Coach still saves the scorecard and proposes nothing.
 
-Every EDL is validated: snapped to whole words, capped to the allowed effects and segment count, and checked on its edited length.
+### Style reference
 
-The Editor renders it with an ffmpeg filter graph (per-segment inputs, `zoompan`, `xfade`/`acrossfade`, `eq`, `vignette`). Captions and the title are an ASS file rendered by libass. Captions light up word by word from the measured word timings, emphasis words appear in their own colour, and Arabic shaping works because it goes through libass.
+The Reference style step measures the reference clip: cut rhythm, speech rate, pauses and faces. A multimodal model (`google/gemini-2.5-flash`) then watches and listens to it with your copy guide in mind. The result is a style profile and a list of checkable traits, such as "cuts every 1-2 s" or "two-word captions in the centre". The Brief turns the traits into check rules, and the Coach uses them to rewrite the outline toward the reference. One analysis costs about $0.005.
 
-In Review, each clip shows its edit as a timeline. The creative-edit switch falls back to the plain cut. **In** and **Out** move the first and last segments. Slow push and Ken Burns are the slowest effects to render, at about 1.5× real time. Takes planned before this change have no EDL and still cut the plain way.
+### Transcript timing and the vision transcript
 
-## Transcript timing
+Gemini writes the transcript text because it's the most faithful to the dialect, but its timestamps are guesses. So a second pass with `openai/whisper-large-v3` (about $0.02 for a 36-minute video) measures when each word is spoken, and Gemini's words are aligned onto Whisper's. Only Whisper's timings are kept. Lines longer than 9 s are split at punctuation or the longest pause.
 
-Gemini writes the transcript text because it's the most faithful to the dialect, but its timestamps are guesses. So the Transcriber runs a second pass with `openai/whisper-large-v3` (about $0.02 per 36-minute video; set `TIMING_MODEL` to change it) to measure when each word is spoken. It then aligns Gemini's words onto Whisper's words, using Arabic-normalised fuzzy matching and Gemini's rough times as a guide. Whisper's text is thrown away; only its timings are kept.
+The vision transcript records what's on screen:
+- **Shots:** ffmpeg finds the cuts.
+- **Labels:** a frame from each shot goes to `google/gemini-2.5-flash-lite`. It labels the kind of shot (close-up, footage, archive photo, graphic and so on), what's in it, any on-screen text, and the number and position of people. That's about $0.035 for a 36-minute episode.
+- **Overlays:** text on more than 20% of shots, such as a logo, is treated as an overlay and listed once.
 
-Each line then starts at its first word and ends at its last. Lines longer than 9 s are split at punctuation or the longest pause. Captions are timed from those word times too. `transcript.json` stores the times to the millisecond, a `words` array per line, and `timing: "aligned" | "estimated"`. If too few words match in a chunk (music, the outro), that chunk keeps Gemini's estimates. On an old transcript, the Transcribe node shows **⏱ Measure timing**; the Gemini text stays cached, so only the timing pass runs.
+Both go in `transcripts/<video>/`. The Transcript panel lets you search, play any line, and pin notes for Pick.
 
-## Vision transcript
+## The Director
 
-The Transcriber also records what's on screen, so the Planner can see the video as well as hear it.
+The chat dock on the left is the **Director**, a [Think](https://developers.cloudflare.com/agents/harnesses/think/) agent. It drives the same workflow through three MCP servers:
 
-1. **Shots:** ffmpeg scene-change detection finds the cuts, measured to the millisecond. Flashes under 0.8 s are merged into the previous shot, and shots over 8 s are sampled every 8 s. A 36-minute episode gives about 510 shots, and detection takes about 70 s.
-2. **Labels:** a frame from the middle of each shot goes to `google/gemini-2.5-flash-lite` (set `VISION_MODEL` to change it), 12 frames per request. Each label has a kind (host close-up or wide, footage, archive photo, map, graphic, text card, animation), a short description, on-screen text, number of people, and a rough horizontal position for the main subject. About $0.035 per episode.
-3. **Clean-up:** text that appears on more than 20% of shots, such as a burned-in hashtag or logo, counts as an overlay. It's removed from the shots and listed once under `overlays`.
+| Crew | MCP endpoint | Tools |
+|---|---|---|
+| Transcriber | `/mcp/transcribe` | `list_videos`, `read_transcript`, `read_vision`, `read_reference`, `job_status` |
+| Planner | `/mcp/plan` | `workflow_status`, `run_workflow`, `run_step`, `read_outline`, `update_outline`, `read_brief`, `read_feedback`, `read_history`, `set_style_reference`, `outline_scores`, `job_status` |
+| Editor | `/mcp/extract` | `list_takes`, `read_take`, `adjust_clip`, `read_clip_script`, `job_status` |
 
-The output goes in `transcripts/<video>/vision/`: `vision.json`, a readable `vision.txt`, and `frames/` (also used as thumbnails in the UI). Every step is cached. How each part uses it:
-- **LLM Planner:** gets the shot log next to the transcript and is asked to favour clips where the picture carries the story and survives a 9:16 crop.
-- **Jev Planner:** adds a *visuals* decision per candidate, plus a measured *9:16-safe* share (screen time where the subject falls inside a centred vertical crop).
-- **Director:** can query it with `read_vision`.
-- **UI:** the Transcript panel has a **Vision** tab, and every clip in Review shows its shots.
-
-The subject position comes from the vision model's guess, and flash-lite tends to call things centred, so read 9:16-safe as optimistic.
-
-## WebMCP mode: a workflow shell for your browser's agent
-
-The third engine, **WebMCP**, takes OpenRouter out of the server entirely. Every hosted-model call path refuses to run in this mode: chat completions, Jev and speech-to-text. The thinking moves to whatever agent runs in your browser, which drives Clipdesk through [WebMCP](https://developer.chrome.com/docs/ai/webmcp) tools that the page registers with `document.modelContext`.
-
-**What the server still does:** only deterministic work.
-- Keeps an existing transcript. If there's none, it imports YouTube's captions with `yt-dlp`; they come with per-word timings, so the result is measured.
-- Detects shots and grabs frames with ffmpeg.
-- Validates plans by snapping to line boundaries, enforcing the outline's length range and rejecting overlaps. Rejected clips come back with a reason.
-- Cuts with ffmpeg and enforces the review gate.
-
-**What the agent does,** with its 19 tools:
-- reads the workflow, outline, feedback, history, transcript and vision in windows
-- labels shots (`get_unlabelled_shots` → `label_shots`)
-- submits plans (`submit_plan`), adjusts clips and comments
-- requests cuts
-
-There's no approve tool, so a take can only be approved by you. The **Agent** panel replaces the Director chat. It shows whether WebMCP is available, a brief you can paste to your agent, a live log of every tool call with its input and output, and a manual runner for trying tools yourself.
-
-Requirements: Chrome 149+ with `chrome://flags/#enable-webmcp-testing` (or the origin trial), and an agent in the browser that speaks WebMCP. Chrome's [Model Context Tool Inspector](https://chromewebstore.google.com/detail/model-context-tool-inspec/gbpdfapgefenggkahomfgkhfehlcenpd) extension lets you call the tools by hand. The desktop app's WebView2 doesn't expose WebMCP yet, so use Chrome at `http://127.0.0.1:4477`.
-
-## Crew engines: LLM, Hybrid or System One
-
-The **Crew engine** switch in the top bar sets who does the crew's thinking. You can also pick an engine for a single take in the Plan panel. The Director is an LLM in every mode. So is the Transcriber, because Jev can't take audio.
-
-| | LLM (classic) | Hybrid (LLM + Jev) | System One (Jev) |
-|---|---|---|---|
-| Planner | One LLM call reads the whole transcript and writes the clip list, with titles, hooks and reasons. | An LLM compiles the outline into Jev's brief, then Jev scores every candidate. | Code proposes candidates; [Jev](https://openrouter.ai/typesafe) answers fixed typed questions about each; code ranks them. |
-| Edit design | Written by the LLM with the plan | Jev picks moves and transitions using the brief's guidance, then the LLM writes titles and emphasis | Jev picks moves and transitions using standard guidance |
-| Editor | ffmpeg | ffmpeg, after a Jev pre-flight | ffmpeg, after a Jev pre-flight that logs edge warnings (it never blocks or edits the cut) |
-| Output | Prose titles and reasons | Prose titles, the LLM's reason, and a breakdown of the brief's own scores | Placeholder titles like "Shocking fact · 21:37", plus a score breakdown for every clip |
-
-The Jev Planner runs in passes. Every line is scored as a possible opener (does it hook, does it work cold) and as a possible ending (does it land, is the thought complete). The best openers are paired with good endings of an allowed length. Jev then judges each candidate window on fit to the outline, whether it stands alone, respect for sensitive topics, tone, your direction, and your earlier feedback. Selection is greedy: no overlaps, spread across tones, and moments from earlier takes scored down. On a 36-minute video that's about 1,000 decisions in about 20 s for about $0.03. Scores are saved in `clips/<run>/jev.json`, runner-ups included.
-
-**Hybrid** adds an LLM step between the outline and System One, so Jev's questions change with the outline instead of being fixed. One call (`MODELS.plan`, about $0.005) reads the outline, your feedback and direction, and a sample of the transcript. It writes a **brief**:
-- opener, ending and clip questions, with weights
-- tone categories and which tones to prefer
-- up to two safety gates, capped at 0.5 (if too few candidates pass, the gates relax and the rest are scored down 25% instead of the plan failing)
-- a "use when…" line for each allowed camera move and transition
-
-Jev then answers those questions for every candidate, as in System One. The brief is its own node on the canvas, between the Outline and the Planner. It's compiled once per video and outline version, and Hybrid takes reuse it until the outline changes, so re-planning costs no LLM call. Your per-take direction goes to Jev directly. The cache is `transcripts/<video>/jev_brief.json`, and each take keeps a copy in `clips/<run>/jev.json`.
-
-**Edit design** is the step between the Planner and the Editor, and it has its own node. For each clip, Jev chooses:
-- a camera move for every segment, from the outline's allowed zooms
-- whether a segment is a flashback, which gives it the outline's flashback look
-- a transition for every gap, from the allowed transitions, knowing what was skipped and whether it leads into the final part
-
-At most one flash is kept per clip. When two parts in a row get the same move, Jev's runner-up is used if it scored at least 15%. The last part gets zoom_out if Jev is at least 60% sure it's the final beat. In Hybrid, the LLM then writes the title, the hook card and emphasis words (only words actually spoken) for the final clips. The Edit design panel shows every choice with Jev's odds, and **Redesign** re-runs it (`POST /api/runs/:id/design`, or the Director's `design_edits`). Redesigning an approved take sends it back to review. Decisions are saved in `clips/<run>/design.json`. Takes planned by the LLM or a browser agent skip this step; their edits come with the plan.
-
-**Jev edge check** (Review panel, or the Director's `check_clips` tool) works on takes from either engine. For each clip it rates whether the in and out points are clean and suggests better lines nearby. You apply a suggestion with one click; it never changes a clip by itself. Results go in `clips/<run>/jev_qa.json`. The model defaults to `~typesafe/jev-latest`; set `JEV_MODEL` in `.env` to change it.
-
-## Outline coach: learning an outline that one-shots
-
-The feedback row runs under the canvas from right to left: **Clips → Clip transcript → Rubric (LLM) → Outline coach → Outline**.
-
-**Clip transcript** is the Transcriber pointed at the finished files, so the coach judges what was rendered, not the plan. For each clip:
-- Whisper on the audio
-- a frame every ~3 s with local face detection, which flags anyone cut off by the 9:16 edge
-- one cheap vision check per clip for framing, readable captions and visible effects
-
-It costs about $0.001 a clip and is saved in `clips/<run>/watch/`. It's cached until the clip is re-cut, and the coach runs it for any clip in its evidence that hasn't been watched.
-
-The coach depends on the Crew engine, like every other step:
-- **LLM:** one LLM call reads the evidence, including the clip transcripts, and writes a revised outline.
-- **Hybrid:** the **Rubric** node (one LLM call) turns the outline and your reviews into 6–12 checkable rules. It also writes two rewrites for each section (up to three) that the evidence says is hurting clips. Jev then rates every finished clip on every rule, without seeing your verdict. Code compares how often each rule is followed on clips you kept or liked vs dropped or disliked. For each flagged section, Jev chooses between keeping it and each rewrite, given those numbers and your comments. A rewrite is applied only with at least 40% and a 10-point lead over the next option, and code assembles the outline from the winners.
-- **System One:** a scorecard only, with one rule per outline section and no rewrites.
-
-The scorecard (`outlines/scorecards/`) and the rubric (`outlines/rubrics/`) are shown in the Coach and Rubric panels.
-
-The rest of this section applies in every mode. The coach's output wires back into the Outline.
-- **Versions:** every take saves the outline it was planned with (`clips/<run>/outline.md`). Every distinct outline becomes a version in `outlines/ledger.json`, with its text in `outlines/versions/`.
-- **Reward:** your review scores the take. The **one-shot score** (0–100) is the share of clips kept, ×0.85 if the take wasn't approved, ×0.9 per clip whose edges you nudged, and ×0.95 per comment on a clip you didn't 👍. A 👎 on a finished clip (Clips panel) counts as a drop. That rating is the strongest signal, because approving mostly means "worth cutting". A version's score is the mean over its reviewed takes.
-- **Proposal:** **Coach outline** sends one LLM call (about $0.01) with:
-  - the current outline
-  - evidence from this video's recent takes and a few reviewed takes from other videos: each clip's status, rating, nudges, comments, Jev's low sub-scores, its moves, and its opening and closing lines
-  - the two best-scoring earlier versions, and how each earlier coach change moved the score
-  - the clip history log
-
-  It returns a revised outline with a hypothesis, what it kept, and each change with its evidence. Proposals are saved in `outlines/proposals/`.
-- **You apply it.** The Coach panel shows the diff: **Apply**, **Apply and plan a new take**, or **Discard**. You can **Restore** any earlier version. The Director can propose (`coach_outline`, `outline_scores`) but can't apply.
-
-Takes planned before versioning show as "outline not recorded". They still count as evidence, but not toward a version's score.
+It uses `run_workflow` by default, the same as ▶ Run, and `run_step` for a single step. It can't review clips or apply an outline proposal: those are yours. Any comment has an *ask Director* link that sends it there.
 
 ## How it runs
 
 ```
-Bun process (server.ts)                         wrangler dev → workerd
+Bun process (server.ts)                         workerd
 ├─ UI (dist/ui)                                 └─ Director (Think Durable Object)
 ├─ /agents/*  ── HTTP + WebSocket proxy ──────►     model: OpenRouter
 ├─ /mcp/*     ◄── MCP (Streamable HTTP) ─────────   tools: the three crew servers
-├─ /api/*     library, jobs, SSE events, outline/history editing
+├─ /api/*     workflow state, ▶ Run, steps, jobs, SSE events, reviews, outline
 └─ /files/*   clip previews (Range requests)
 ```
 
-Think needs the Workers runtime, so the Bun server launches the prebuilt worker bundle with `wrangler dev --no-bundle` and stops it on exit. The crew run in Bun because they need ffmpeg and the project folder. Long jobs return a `job_id` right away and the Director polls the matching `*_status` tool, which waits up to 50 s per call.
+Think needs the Workers runtime, so the Bun server launches workerd directly on the prebuilt worker bundle (`src/server/workerd.ts` writes its config) and stops it on exit. The workflow runs in Bun because it needs ffmpeg and the workspace folder. Every step is a job with a `job_id`, progress and a log. ▶ Run is a job that runs the step jobs in order, and stopping it stops the current step.
 
-Models are cheap by default: Director and Planner use `z-ai/glm-5.3-flash`, and the Transcriber uses `google/gemini-2.5-flash` for audio. You can override them in the project `.env` with `DIRECTOR_MODEL`, `PLAN_MODELS` (comma-separated) and `TRANSCRIBE_MODEL`.
+Models are cheap by default, and each can be overridden in `.env`. The three writing calls also ask OpenRouter for the fastest provider of the model (`provider.sort: throughput`), because providers of the same model differ a lot in speed: the same brief took from 10 s to 150 s, at the same price.
 
-## Requirements
-
-- Bun 1.2+, Node 18+ (wrangler runs on Node), ffmpeg/ffprobe on `PATH`
-- An OpenRouter key, added in the app (see below). No file to edit.
-- For the Windows app: [Hutch](https://hutch.blackboard.sh) (installed automatically by `npx electrobun init`, or from its site)
+| Setting | Default | Used for |
+|---|---|---|
+| `DIRECTOR_MODEL` | `z-ai/glm-5.3-flash` | the Director |
+| `PLAN_MODELS` (comma-separated) | `z-ai/glm-5.3-flash` | Brief, hook-card options, outline rewrites |
+| `PLAN_REASONING` | `low` | reasoning effort for those three writing calls |
+| `TRANSCRIBE_MODEL` | `google/gemini-2.5-flash` | transcripts, the style reference |
+| `TIMING_MODEL` | `openai/whisper-large-v3` | word timings |
+| `VISION_MODEL` | `google/gemini-2.5-flash-lite` | shot labels, Check's frames |
+| `JEV_MODEL` | `~typesafe/jev-latest` | every judgement |
 
 ## The OpenRouter key
 
-The key's source of truth is the app's browser storage (localStorage, per origin `http://127.0.0.1:4477`). On first open, the **🔑 Add key** button in the top bar opens a prompt. A key is checked with OpenRouter before it's accepted, and the prompt then shows its label, spend and limit.
+The key's source of truth is the app's own browser storage. On first open, the **🔑 Add key** button in the top bar opens a prompt, and the key is checked with OpenRouter before it's accepted.
 - **Server:** the page pushes the key to the server on every (re)connect, and the server holds it in memory only. Nothing is written to disk, so there's no setup step after installing the desktop app.
-- **Director worker:** it has no key of its own. On every model call it fetches the key from the server's `/internal/key`, with a random token made at each launch, so a new key takes effect without a restart.
-- **Where it's stored:** the desktop app keeps its WebView2 profile under `%LOCALAPPDATA%\dev.clipdesk.cuttingroom\<channel>\WebView2`, so the key survives restarts. Dev and stable builds each have their own.
-- **Fallback:** `OPENROUTER_KEY` in the environment or the project `.env` is still read, for the headless CLI. A key from the browser always wins.
+- **Director:** it fetches the key from the server's `/internal/key` on every model call, with a random token made at each launch.
+- **Where it's kept:** in the browser's storage for http://127.0.0.1:4477 when you run a checkout. The desktop app keeps its WebView2 profile under `%LOCALAPPDATA%\dev.mrclipper.app\<channel>\WebView2`, so the key survives restarts.
+- **Fallback:** `OPENROUTER_KEY` in the environment or `.env` is still read, for running headless. A key from the browser always wins.
 
 ## Commands
 
 ```sh
-bun install
-bun run build          # worker bundle + UI + server into dist/
-bun run start          # browser: http://127.0.0.1:4477
-bun run desktop        # Windows app window (Electrobun dev build)
-bun run desktop:build  # Windows installer into artifacts/
+bun dev                # setup (on the first run), build, then serve at http://127.0.0.1:4477
+bun run setup          # get or check the tools in .store/tools
+bun run build          # the Director bundle, the UI and the server, into dist/
+bun start              # serve the last build
+bun run typecheck
+bun run desktop        # the desktop app window, from this checkout (Electrobun dev build)
+bun run desktop:build  # the standalone Windows installer, into artifacts/
 ```
 
-Run the Hutch commands from PowerShell, not Git Bash. Git Bash's GNU `tar` can't extract Hutch's downloads.
+Only the two desktop commands need [Hutch](https://hutch.blackboard.sh). On Windows, run them from PowerShell rather than Git Bash, because Git Bash's GNU `tar` can't extract Hutch's downloads. A checkout runs the Director on the workerd that `bun i` installs, and even the build runs on Bun alone (wrangler bundles the Director under Bun).
 
 ## The desktop app
 
-`src/desktop/index.ts` is the Electrobun main process, running on the Bun runtime (`mainProcess: "bun"`). It starts the same server in-process and opens a native WebView2 window on it.
+`src/desktop/index.ts` is the Electrobun main process. It starts the same server in-process and opens a native WebView2 window on it. It listens on its own ports (4478 and 8798), so it can run next to a `bun dev` checkout.
 
-**The installer is standalone.** It needs nothing installed on the machine and no setup: no Node, ffmpeg, Python or `.env`. `bun run desktop:build` runs `scripts/vendor.ts`, which collects everything the app runs into `vendor/`. Electrobun then packs it next to the app, under `Resources/app`:
+**The installer is standalone.** It needs nothing else installed: no Node, ffmpeg, Python or `.env`. `bun run desktop:build` runs `scripts/vendor.ts`, which collects what the app runs into `vendor/`, and Electrobun packs it under `Resources/app`:
 
-| Bundled | What | Replaces |
-|---|---|---|
-| `dist/ui`, `dist/worker` | the UI and the Director bundle | the source checkout |
-| `runtime/workerd.exe` | Cloudflare's Workers runtime, running the Director directly (`src/server/workerd.ts` writes its config) | Node + `wrangler dev` |
-| `runtime/ffmpeg.exe` | gyan.dev essentials build: libass, fribidi and harfbuzz for Arabic captions, x264. Duration and size come from `ffmpeg -i`, so no ffprobe. | ffmpeg/ffprobe on `PATH` |
-| `runtime/yt-dlp.exe` | YouTube imports and captions | `tools/yt-dlp.exe` |
-| `runtime/faces/` | `tools/faces.py` compiled with PyInstaller (OpenCV YuNet) | the Python venv |
-| `models/`, `templates/` | the face model and the starter outline | `.data/models`, your own outline |
+| Bundled | What |
+|---|---|
+| `dist/ui`, `dist/worker` | the UI and the Director bundle |
+| `runtime/workerd.exe` | Cloudflare's Workers runtime, running the Director |
+| `runtime/ffmpeg.exe` | the gyan.dev essentials build (libass, fribidi and harfbuzz for Arabic captions, x264); durations come from `ffmpeg -i`, so there's no ffprobe |
+| `runtime/yt-dlp.exe` | link imports |
+| `runtime/faces/` | `tools/faces.py` compiled with PyInstaller (OpenCV YuNet) |
+| `models/`, `templates/` | the face model and the starter outline |
 
 Where things live when installed:
-- **App state** goes to `%LOCALAPPDATA%\Clipdesk`: settings, thumbnails, Director storage, and the workspace choice.
-- **The workspace** is `Documents\Clipdesk` by default: videos, `transcripts/`, `clips/` and `clip_outline.md`. It's created on first launch with the starter outline. **Change…** under the project menu (or on the empty-workspace screen) points the app at another folder, such as an existing project, from the next launch.
-- **The OpenRouter key** is asked for in the app (see above).
+- **App state** is in `%LOCALAPPDATA%\mrClipper`: settings, thumbnails, the Director's storage, and the workspace choice.
+- **The workspace** is `Documents\mrClipper` by default. It has the same layout as a checkout's `.store/workspace/`, and it's created on first launch with the starter outline. **Change…** in the project menu points the app at another folder from the next launch.
+- **Coming from Clipdesk:** the first launch moves `%LOCALAPPDATA%\Clipdesk` and `Documents\Clipdesk` to the new names. The OpenRouter key is asked for once more, because the app's browser storage is new.
 
-The installer is about 350 MB unpacked. Most of it is workerd, ffmpeg and OpenCV.
-
-Running from source (`bun run start`, `bun run desktop`) still uses the checkout. It uses workerd from `node_modules` (set `CLIPDESK_WRANGLER=1` to use `wrangler dev` instead), plus ffmpeg and yt-dlp from `PATH` or `tools/`, and the venv for face detection.
+The installer is about 350 MB unpacked, mostly workerd, ffmpeg and OpenCV.
 
 ## Settings
 
+All optional. Set them in the environment, or in `.env` (see `.env.example`); relative paths are relative to the checkout.
+
 | Variable | Default | |
 |---|---|---|
-| `CLIPDESK_PORT` | 4477 | UI, API and MCP |
-| `CLIPDESK_WORKER_PORT` | 8799 | internal Director (workerd) port |
-| `CLIPDESK_DATA` | `.data` | app state (the desktop app uses `%LOCALAPPDATA%\Clipdesk`) |
-| `CLIP_ROOT` | `..` | project folder with videos, `transcripts/`, `clips/` |
+| `MRCLIPPER_PORT` | 4477 (desktop app: 4478) | UI, API and MCP |
+| `MRCLIPPER_WORKER_PORT` | 8799 (desktop app: 8798) | the Director's internal port (workerd) |
+| `MRCLIPPER_WORKSPACE` | `.store/workspace` | the workspace; wins over the folder chosen in the app |
+| `MRCLIPPER_STORE` | `.store` | holds `workspace/`, `state/` and `tools/` unless those are set below |
+| `MRCLIPPER_DATA` | `.store/state` | app state (desktop app: `%LOCALAPPDATA%\mrClipper`) |
+| `MRCLIPPER_TOOLS` | `.store/tools` | downloaded tools |
+| `MRCLIPPER_SKIP_SETUP` | unset | `bun dev` skips the tool setup |
+| `MRCLIPPER_WRANGLER` | unset | run the Director with `wrangler dev` instead of workerd |
+| `OPENROUTER_KEY` | unset | headless use only; the app's own key wins |

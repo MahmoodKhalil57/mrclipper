@@ -13,7 +13,7 @@ export const keySource = (): "browser" | "env" | null => (browserKey ? "browser"
 /** Per-launch secret the Director worker uses to fetch the key from this server. Never leaves this machine. */
 export const INTERNAL_TOKEN = randomUUID();
 
-export const MISSING_KEY = "No OpenRouter key yet. Add yours with the 🔑 Key button in Clipdesk's top bar.";
+export const MISSING_KEY = "No OpenRouter key yet. Add yours with the 🔑 Key button in mrClipper's top bar.";
 
 export type KeyInfo = { set: boolean; source: "browser" | "env" | null; label?: string; usage?: number; limit?: number | null; verified?: boolean };
 

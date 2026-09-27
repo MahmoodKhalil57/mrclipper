@@ -197,8 +197,9 @@ export function normalizeEdit(raw: any, segs: Segment[], style: EditStyle, vt: V
 /**
  * The default edit when a planner only gives a range: tighten it by cutting pauses, alternate
  * jump-cut framing, Ken Burns on archive photos, reframe to the subject. Deterministic.
+ * minLen: the outline's shortest clip length, which wins over cutting pauses.
  */
-export function autoEdit(start: number, end: number, segs: Segment[], style: EditStyle, vt: VisionTranscript | null, title?: string): Edit {
+export function autoEdit(start: number, end: number, segs: Segment[], style: EditStyle, vt: VisionTranscript | null, title?: string, minLen = 0): Edit {
   const words = wordsOf(segs).filter((w) => w.end > start && w.start < end);
   let pieces: [number, number][] = [];
   for (const w of words) {
@@ -207,6 +208,30 @@ export function autoEdit(start: number, end: number, segs: Segment[], style: Edi
     else pieces.push([w.start, w.end]);
   }
   if (!pieces.length) pieces = [[start, end]];
+  // The outline's clip length wins over cutting pauses: put the shortest pauses back until it's long enough.
+  const edited = () => pieces.reduce((n, [a, b]) => n + b - a, 0);
+  while (pieces.length > 1 && edited() < minLen) {
+    let k = 0;
+    for (let i = 1; i < pieces.length - 1; i++) if (pieces[i + 1][0] - pieces[i][1] < pieces[k + 1][0] - pieces[k][1]) k = i;
+    pieces.splice(k, 2, [pieces[k][0], pieces[k + 1][1]]);
+  }
+  // A sliver (a word or two between long pauses) flashes by, and its transition can be longer than it is:
+  // merge it into a neighbour across a short pause, else drop it.
+  const sliver = Math.max(1, style.transitionLength * 1.5);
+  for (let i = 0; i < pieces.length && pieces.length > 1; ) {
+    const [a, b] = pieces[i];
+    if (b - a >= sliver) {
+      i++;
+      continue;
+    }
+    const before = i > 0 ? a - pieces[i - 1][1] : Infinity;
+    const after = i < pieces.length - 1 ? pieces[i + 1][0] - b : Infinity;
+    if (Math.min(before, after) <= 3) {
+      if (before <= after) pieces[i - 1][1] = b;
+      else pieces[i + 1][0] = a;
+    }
+    pieces.splice(i, 1);
+  }
   // Only with jump-cut zoom on: fast talkers leave few pauses, so also cut long pieces at line
   // boundaries, which gives the alternating framing something to alternate on. Otherwise continuous
   // speech stays continuous (framing still changes at every shot cut, handled by the renderer).

@@ -1,25 +1,11 @@
-/* System One (Jev) mode: engine switch, engine tags, score breakdowns, edge checks. */
+/* Jev: score bars, breakdowns, edge checks and the tags on outline versions. */
 
 :root { --jev: #b9a7ff; }
 
-.engine-switch { display: flex; align-items: center; gap: 2px; padding: 3px 3px 3px 10px; border: 1px solid var(--line); border-radius: 20px; }
-.engine-switch .label { margin-right: 6px; }
-.engine-switch button { background: none; border: 0; border-radius: 16px; padding: 4px 11px; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-.engine-switch button:hover { color: var(--ink); }
-.engine-switch button.on { background: var(--panel-2); color: var(--ink); }
-.engine-switch button.on:has(.s1) { background: color-mix(in oklab, var(--jev) 18%, var(--panel)); color: #e8e2ff; }
-.s1 { width: 8px; height: 8px; border-radius: 2px; background: var(--jev); transform: rotate(45deg); display: inline-block; }
 
 .engine-tag { font: 9.5px var(--mono); letter-spacing: 0.04em; padding: 3px 7px; border-radius: 5px; white-space: nowrap; background: var(--panel-2); color: var(--muted); }
 .engine-tag.jev { background: color-mix(in oklab, var(--jev) 16%, transparent); color: var(--jev); }
 
-.engine-pick { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.engine-pick button { text-align: left; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; padding: 9px 10px; display: grid; gap: 4px; }
-.engine-pick button b { font-size: 12.5px; font-weight: 600; }
-.engine-pick button span { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
-.engine-pick button:hover { border-color: var(--line-2); }
-.engine-pick button.on { border-color: var(--plan); box-shadow: 0 0 0 3px color-mix(in oklab, var(--plan) 14%, transparent); }
-.engine-pick button.on.e-jev, .engine-pick button.on.e-hybrid { border-color: var(--jev); box-shadow: 0 0 0 3px color-mix(in oklab, var(--jev) 14%, transparent); }
 
 .bar { display: inline-block; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; min-width: 60px; }
 .bar i { display: block; height: 100%; background: var(--jev); border-radius: 3px; }
@@ -50,19 +36,12 @@
 .runner { display: grid; grid-template-columns: 92px 70px 1fr; gap: 8px; align-items: center; padding: 3px 0; }
 .runner .ar { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 12.5px; }
 
-@media (max-width: 1100px) {
-  .engine-switch .label { display: none; }
-}
 @media (max-width: 640px) {
-  .scores, .engine-pick { grid-template-columns: 1fr; }
+  .scores { grid-template-columns: 1fr; }
 }
 
-/* Hybrid (LLM brief + Jev) and the Edit design step. */
+/* The Design edits step. */
 :root { --design: #d9a6f2; }
-.hy { width: 9px; height: 9px; border-radius: 50%; display: inline-block; background: conic-gradient(var(--plan) 0 50%, var(--jev) 50% 100%); }
-.engine-switch button.on.e-hybrid { background: color-mix(in oklab, var(--jev) 14%, var(--panel)); color: #efe6ff; }
-.engine-tag.hybrid { background: linear-gradient(90deg, color-mix(in oklab, var(--plan) 16%, transparent), color-mix(in oklab, var(--jev) 18%, transparent)); color: #d8ccff; }
-.engine-pick { grid-template-columns: 1fr 1fr; }
 
 .gnode.design { --c: var(--design); }
 .wire.flowing.w-design .react-flow__edge-path { stroke: var(--design); }
@@ -160,3 +139,17 @@
 .switch-menu .ws-line { border-top: 1px solid var(--line); margin-top: 4px; }
 .ws-path { color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 360px; direction: ltr; }
 .linkish { background: none; border: 0; padding: 0; color: var(--transcribe); font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+
+/* Style reference nodes and panel. */
+.ref-drop { border: 1px dashed var(--line-2); border-radius: 9px; min-height: 92px; display: grid; place-items: center; text-align: center; font-size: 11.5px; color: var(--muted); padding: 6px; overflow: hidden; }
+.ref-drop.over { border-color: var(--transcribe); background: color-mix(in oklab, var(--transcribe) 10%, transparent); }
+.ref-drop video { width: 100%; max-height: 150px; object-fit: contain; border-radius: 6px; background: #000; }
+.guide-text-node { font: italic 14px/1.4 var(--serif); color: var(--ink-2); }
+.ref-player video { width: 100%; max-height: 420px; background: #000; border-radius: 8px; }
+.card.focus { border-color: color-mix(in oklab, var(--transcribe) 45%, var(--line)); }
+.chip-btn { background: var(--bg); border: 1px solid var(--line); color: var(--ink-2); border-radius: 12px; padding: 3px 9px; font-size: 11px; cursor: pointer; }
+.chip-btn:hover { border-color: var(--line-2); color: var(--ink); }
+.file-btn { justify-self: start; cursor: pointer; }
+
+:root { --reference: var(--transcribe); }
+.job.reference, .tray-item.reference { --c: var(--transcribe); }

@@ -54,15 +54,6 @@
 .switch-item.add { color: var(--transcribe); justify-content: center; border-top: 1px dashed var(--line); border-radius: 0 0 8px 8px; margin-top: 4px; }
 .switch-title { font-family: var(--arabic); font-size: 12.5px; direction: rtl; text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-.gate-toggle {
-  display: flex; align-items: center; gap: 8px; background: none; border: 1px solid var(--line); border-radius: 20px;
-  padding: 5px 12px 5px 6px; font-size: 12px; color: var(--muted);
-}
-.gate-toggle.on { color: var(--ink); border-color: color-mix(in oklab, var(--ok) 40%, var(--line)); }
-.gate-switch { width: 28px; height: 16px; border-radius: 10px; background: var(--line-2); position: relative; transition: background 0.2s; }
-.gate-switch i { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ink-2); transition: transform 0.2s; }
-.gate-toggle.on .gate-switch { background: color-mix(in oklab, var(--ok) 60%, var(--line)); }
-.gate-toggle.on .gate-switch i { transform: translateX(12px); background: #fff; }
 
 /* Director dock */
 .dock { grid-area: dock; border-right: 1px solid var(--line); background: var(--bench); overflow: hidden; min-width: 0; }
@@ -324,7 +315,6 @@
   .studio.dock-open .dock { transform: none; }
   .studio:not(.dock-open) .dock > * { visibility: visible; }
   .panel { right: 0; }
-  .gate-toggle { font-size: 0; padding: 5px; gap: 0; }
 }
 @media (max-width: 640px) {
   .switch-name, .brand-name { display: none; }

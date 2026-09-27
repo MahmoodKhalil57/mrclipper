@@ -1,21 +1,18 @@
-// Human-in-the-loop state: approvals, keep/drop decisions and comments on the agents' artifacts.
-// Stored next to the artifacts so the agents (and the Python scripts) can read them:
-//   clips/<run>/review.json          run approval, per-clip status and comments
+// Step 5 · Review (you), and the notes you pin while reading a transcript. Stored next to the artifacts:
+//   clips/<run>/review.json          your verdict per clip (keep/drop), nudges, comments, and whether you finished
 //   transcripts/<stem>/notes.json    comments pinned to transcript timestamps
-//   .data/settings.json              app-wide switches such as the review gate
+// Your review is the reward the Coach learns from.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, parse } from "node:path";
-import { DATA_DIR } from "./config";
 import { listRuns, runDir, transcriptDir } from "./library";
 import { fmt } from "./lib";
 
 export type Comment = { id: string; text: string; at: number; by?: "you" | "agent" };
-/** status: your call before cutting. rating: your verdict after watching the finished clip (1 up, -1 down). */
+/** status: your verdict on the finished clip. rating: the older 👍/👎 on finished clips, still read for old takes. */
 export type ClipReview = { status?: "keep" | "drop"; comments: Comment[]; nudges?: number; rating?: 1 | -1 };
+/** approved: you finished reviewing this take. */
 export type Review = { approved: boolean; approvedAt?: number; comments: Comment[]; clips: Record<string, ClipReview> };
 export type Note = Comment & { t: number };
-/** engine: who does the crew's thinking. "classic" = LLM prompts, "hybrid" = LLM brief + Jev decisions, "jev" = System One typed decisions. */
-export type Settings = { requireApproval: boolean; engine: "classic" | "hybrid" | "jev" | "webmcp" };
 
 const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 const readJson = <T,>(file: string, fallback: T): T => {
@@ -25,20 +22,6 @@ const readJson = <T,>(file: string, fallback: T): T => {
     return fallback;
   }
 };
-
-// ── Settings ─────────────────────────────────────────────────────────
-
-const SETTINGS = join(DATA_DIR, "settings.json");
-
-export function readSettings(): Settings {
-  return readJson<Settings>(SETTINGS, { requireApproval: true, engine: "classic" });
-}
-
-export function writeSettings(patch: Partial<Settings>): Settings {
-  const next = { ...readSettings(), ...patch };
-  writeFileSync(SETTINGS, JSON.stringify(next, null, 2));
-  return next;
-}
 
 // ── Run reviews ──────────────────────────────────────────────────────
 
@@ -64,14 +47,6 @@ export function setClipStatus(run: string, clipId: number, status: "keep" | "dro
   const r = readReview(run);
   const c = (r.clips[clipId] ??= { comments: [] });
   c.status = status;
-  return saveReview(run, r);
-}
-
-export function setClipRating(run: string, clipId: number, rating: 1 | -1 | undefined) {
-  const r = readReview(run);
-  const c = (r.clips[clipId] ??= { comments: [] });
-  if (rating) c.rating = rating;
-  else delete c.rating;
   return saveReview(run, r);
 }
 
@@ -144,10 +119,10 @@ export function feedbackDigest(video: string): string {
       const cr = r.clips[clip.id];
       if (!cr) continue;
       const label = `Clip ${clip.id} "${clip.title}" (${fmt(clip.start)}-${fmt(clip.end)})`;
-      if (cr.status) lines.push(`  - ${label}: user marked it ${cr.status.toUpperCase()}`);
+      if (cr.status) lines.push(`  - ${label}: you ${cr.status === "keep" ? "KEPT" : "DROPPED"} it`);
       for (const c of cr.comments) lines.push(`  - ${label}: ${c.text}`);
     }
-    if (lines.length) out.push(`- Run ${run.created}${r.approved ? " (approved)" : ""}:`, ...lines);
+    if (lines.length) out.push(`- Take ${run.created}${r.approved ? " (review finished)" : ""}:`, ...lines);
   }
   return out.join("\n");
 }

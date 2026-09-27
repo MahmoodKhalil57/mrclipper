@@ -42,12 +42,26 @@ export function shortName(stem: string): string {
   return id ? `${head.slice(0, 18)} [${id}]` : title.slice(0, 32);
 }
 
-export const AGENT_LABEL: Record<AgentKey | "design" | "brief" | "watch" | "rubric" | "coach", string> = { transcribe: "Transcriber", brief: "Brief · LLM", plan: "Planner", design: "Designer", extract: "Editor", watch: "Clip transcript", rubric: "Rubric · LLM", coach: "Coach" };
+/** Job kinds as the canvas names them (the tray, job cards and logs use these). */
+export const AGENT_LABEL: Record<string, string> = {
+  source: "Import", refclip: "Reference clip", transcript: "Transcribe", refstyle: "Reference style", brief: "Brief",
+  pick: "Pick clips", design: "Design edits", render: "Render", check: "Check", coach: "Coach", workflow: "▶ Run",
+  // the Director's three MCP servers
+  transcribe: "Transcriber", plan: "Planner", extract: "Editor",
+};
+
+/** Who works on each job kind: the colour it wears everywhere. */
+export const AGENT_WHO: Record<string, "you" | "transcriber" | "llm" | "jev" | "code"> = {
+  source: "you", refclip: "you", transcript: "transcriber", refstyle: "transcriber", brief: "llm",
+  pick: "jev", design: "jev", render: "code", check: "jev", coach: "jev", workflow: "code",
+};
 
 export const TOOL_AGENT: Record<string, AgentKey> = {
-  list_videos: "transcribe", transcribe_video: "transcribe", transcribe_status: "transcribe", read_transcript: "transcribe",
-  read_outline: "plan", update_outline: "plan", read_history: "plan", plan_clips: "plan", plan_status: "plan",
-  list_runs: "extract", read_clip_script: "extract", adjust_clip: "extract", extract_clips: "extract", extract_status: "extract",
+  list_videos: "transcribe", read_transcript: "transcribe", read_vision: "transcribe", read_reference: "transcribe",
+  workflow_status: "plan", run_workflow: "plan", run_step: "plan", read_outline: "plan", update_outline: "plan", read_brief: "plan",
+  read_feedback: "plan", read_history: "plan", set_style_reference: "plan", outline_scores: "plan",
+  list_takes: "extract", read_take: "extract", adjust_clip: "extract", read_clip_script: "extract",
+  job_status: "plan",
 };
 
 const KNOWN = Object.keys(TOOL_AGENT).sort((a, b) => b.length - a.length);

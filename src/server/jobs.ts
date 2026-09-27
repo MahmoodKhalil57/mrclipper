@@ -2,7 +2,8 @@ import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_DIR } from "./config";
 
-export type AgentName = "import" | "transcribe" | "brief" | "plan" | "design" | "extract" | "watch" | "rubric" | "coach";
+/** Job kinds, named after the canvas nodes they belong to ("workflow" is the ▶ Run that sequences them). */
+export type AgentName = "source" | "refclip" | "transcript" | "refstyle" | "brief" | "pick" | "design" | "render" | "check" | "coach" | "workflow";
 export type JobStatus = "running" | "done" | "failed" | "cancelled";
 export type LogEntry = { t: number; level: "info" | "warn" | "error"; msg: string };
 

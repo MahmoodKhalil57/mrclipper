@@ -1,6 +1,6 @@
 // Clip transcript: the Transcriber, pointed at the finished clips instead of the source.
-// It listens to and watches what the Editor actually rendered, so the Outline coach judges the
-// output (captions, framing, effects, what ended up being said), not just the planned ranges.
+// It listens to and watches what Render actually produced, so Check (and through it the Coach)
+// judges the output (captions, framing, effects, what ended up being said), not the planned ranges.
 //
 //   audio   Whisper word timings on the rendered clip, compared with the words the plan expected
 //   frames  one frame every ~3 s: local face detection (is anyone cut off by the 9:16 edge?) and a
@@ -10,7 +10,6 @@
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MODELS } from "../config";
-import { engineSetting } from "../cloud";
 import type { JobContext } from "../jobs";
 import { extractJson, openrouter, pool, probeDuration, run } from "../lib";
 import { readClipData, readTranscript, rel, runDir } from "../library";
@@ -88,7 +87,7 @@ async function watchOne(ctx: JobContext, runId: string, data: ReturnType<typeof 
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   const duration = await probeDuration(file);
-  const cloud = engineSetting() !== "webmcp";
+  const cloud = true;
 
   // Audio: what the finished clip actually says.
   let audio: ClipWatch["audio"] = null;

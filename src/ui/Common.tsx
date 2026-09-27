@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Comment, Job } from "./api";
-import { AGENT_LABEL, clock, elapsed, md, usd } from "./util";
+import { AGENT_LABEL, AGENT_WHO, clock, elapsed, md, usd } from "./util";
 
 export function Film({ value, status, agent }: { value: number; status: string; agent?: string }) {
   return <div className={`film ${status}`} style={{ ["--p" as any]: value, ...(agent ? { ["--c" as any]: `var(--${agent})` } : {}) }} />;
@@ -37,12 +37,12 @@ export function JobCard({ job, onStop, flash, defaultOpen }: { job: Job; onStop?
     }
   }, [flash]);
 
-  const agent = job.agent === "import" ? "director" : job.agent;
+  const agent = `who-${AGENT_WHO[job.agent] ?? "code"}`;
   return (
-    <div ref={ref} className={`job ${job.agent} ${flash ? "flash" : ""}`}>
+    <div ref={ref} className={`job ${agent} ${flash ? "flash" : ""}`}>
       <div className="job-head">
         <div className="job-top">
-          <span className="tag" style={{ ["--c" as any]: `var(--${agent})` }}>{job.agent === "import" ? "Import" : AGENT_LABEL[job.agent]}</span>
+          <span className="tag" style={{ ["--c" as any]: `var(--${agent})` }}>{AGENT_LABEL[job.agent] ?? job.agent}</span>
           <button className="job-title linkish" dir="auto" title={job.title} onClick={() => setOpen(!open)}>{job.title}</button>
           {job.status === "running" && onStop && (
             <button className="btn sm danger" onClick={() => onStop(job.id)} title="Stop this job">■ Stop</button>
@@ -64,8 +64,8 @@ export function JobCard({ job, onStop, flash, defaultOpen }: { job: Job; onStop?
 }
 
 const STATE_LABEL: Record<string, string> = {
-  locked: "waiting on upstream", ready: "ready", running: "running", waiting: "needs you",
-  done: "done", failed: "failed", stopped: "stopped",
+  empty: "add it", optional: "optional", locked: "waiting", ready: "ready", stale: "out of date",
+  running: "running", waiting: "your turn", done: "done", failed: "failed", stopped: "stopped",
 };
 
 export function StateChip({ state }: { state: string }) {

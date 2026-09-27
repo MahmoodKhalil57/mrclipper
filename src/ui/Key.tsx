@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { actions, type KeyInfo } from "./api";
 
-const LS = "clipdesk.openrouterKey";
+const LS = "mrclipper.openrouterKey";
 
 export function storedKey(): string {
   try {
@@ -32,8 +32,8 @@ export async function pushStoredKey(): Promise<boolean> {
 
 const mask = (k: string) => (k.length > 16 ? `${k.slice(0, 9)}…${k.slice(-4)}` : "••••");
 
-export function KeyButton({ status, needed, onChange, toast }: {
-  status: KeyInfo | undefined; needed: boolean; onChange: () => void; toast: (m: string, kind?: "err" | "ok") => void;
+export function KeyButton({ status, onChange, toast }: {
+  status: KeyInfo | undefined; onChange: () => void; toast: (m: string, kind?: "err" | "ok") => void;
 }) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
@@ -45,11 +45,11 @@ export function KeyButton({ status, needed, onChange, toast }: {
 
   // First run: nothing anywhere, so open the prompt once.
   useEffect(() => {
-    if (status && !status.set && needed && !local && !asked.current) {
+    if (status && !status.set && !local && !asked.current) {
       asked.current = true;
       setOpen(true);
     }
-  }, [status?.set, needed]);
+  }, [status?.set]);
   useEffect(() => {
     if (open && set) actions.keyInfo().then(setInfo).catch(() => setInfo(null));
   }, [open, set, status?.source]);
@@ -80,13 +80,13 @@ export function KeyButton({ status, needed, onChange, toast }: {
   return (
     <div className="keybox" onClick={(e) => e.stopPropagation()}>
       <button className={`btn ghost sm key-btn ${set ? "" : "missing"}`} onClick={() => setOpen(!open)} title="OpenRouter key">
-        <span className={`lamp ${set ? "ready" : needed ? "down" : "starting"}`} /> {set ? "Key" : "Add key"}
+        <span className={`lamp ${set ? "ready" : "down"}`} /> {set ? "Key" : "Add key"}
       </button>
       {open && (
         <div className="key-pop">
           <div className="row"><b className="grow">OpenRouter key</b><button className="btn ghost sm" onClick={() => setOpen(false)} aria-label="Close">✕</button></div>
           <div className="hint">
-            Kept in this app's own browser storage, the only place it's saved. Clipdesk's server holds a copy in memory while it runs and gets it again from here after a restart. Nothing is written to disk.
+            Kept in this app's own browser storage, the only place it's saved. mrClipper's server holds a copy in memory while it runs and gets it again from here after a restart. Nothing is written to disk.
           </div>
           {set && (
             <div className="key-now">
@@ -108,7 +108,6 @@ export function KeyButton({ status, needed, onChange, toast }: {
             <span className="grow" />
             {status?.source === "browser" && <button className="btn ghost sm" onClick={remove}>Remove</button>}
           </div>
-          {!needed && <div className="hint">WebMCP mode makes no OpenRouter calls, so no key is needed right now.</div>}
         </div>
       )}
     </div>

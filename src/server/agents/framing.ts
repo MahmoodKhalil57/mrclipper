@@ -8,7 +8,7 @@
 // The Editor splits segments at shot cuts so the framing can change with every cut.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { APP_DIR } from "../config";
+import { APP_DIR, TOOLS_DIR } from "../config";
 import type { JobContext } from "../jobs";
 import { pool, probeMedia, run } from "../lib";
 
@@ -26,18 +26,25 @@ export async function probeAspect(video: string): Promise<number> {
   return w && h ? w / h : 16 / 9;
 }
 
-// The desktop app ships faces.py compiled to runtime/faces/faces.exe (no Python needed) and the model
-// in models/; a development checkout uses the venv and model under .data/.
-const FACES_EXE = [join(APP_DIR, "runtime", "faces", "faces.exe")].find(existsSync);
-const PYTHON = [join(APP_DIR, ".data", "py", "Scripts", "python.exe"), join(APP_DIR, ".data", "py", "bin", "python")].find(existsSync);
-const MODEL = [join(APP_DIR, "models", "face_detection_yunet_2023mar.onnx"), join(APP_DIR, ".data", "models", "face_detection_yunet_2023mar.onnx")].find(existsSync) ?? "";
-export const faceDetectionAvailable = () => (!!FACES_EXE || !!PYTHON) && !!MODEL;
+// The desktop app ships faces.py compiled to runtime/faces/ (no Python needed) and the model in models/;
+// a checkout uses the Python and the model that `bun run setup` puts in .store/tools/. Looked up per call,
+// so running the setup doesn't need a restart.
+const MODEL_FILE = "face_detection_yunet_2023mar.onnx";
+function faceDetector(): { cmd: string[]; model: string } | null {
+  const exe = [join(APP_DIR, "runtime", "faces", process.platform === "win32" ? "faces.exe" : "faces")].find(existsSync);
+  const python = [join(TOOLS_DIR, "py", "Scripts", "python.exe"), join(TOOLS_DIR, "py", "bin", "python")].find(existsSync);
+  const model = [join(APP_DIR, "models", MODEL_FILE), join(TOOLS_DIR, "models", MODEL_FILE)].find(existsSync);
+  if (!model || (!exe && !python)) return null;
+  return { cmd: exe ? [exe] : [python!, join(APP_DIR, "tools", "faces.py")], model };
+}
+export const faceDetectionAvailable = () => !!faceDetector();
 
 /** Run YuNet (tools/faces.py) on frame files. Null if detection isn't set up or fails. */
 export async function runFaceDetector(ctx: JobContext, frames: string[]): Promise<Map<string, Face[]> | null> {
-  if (!faceDetectionAvailable() || !frames.length) return null;
-  const proc = Bun.spawn(FACES_EXE ? [FACES_EXE] : [PYTHON!, join(APP_DIR, "tools", "faces.py")], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.write(JSON.stringify({ model: MODEL, frames, min_score: 0.6 }));
+  const fd = faceDetector();
+  if (!fd || !frames.length) return null;
+  const proc = Bun.spawn(fd.cmd, { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  proc.stdin.write(JSON.stringify({ model: fd.model, frames, min_score: 0.6 }));
   proc.stdin.end();
   const [out, err, code] = [await new Response(proc.stdout).text(), await new Response(proc.stderr).text(), await proc.exited];
   if (code !== 0) {
@@ -56,7 +63,7 @@ export async function detectFaces(
   const todo = shots.filter((s) => !(s.id in cache));
   if (!todo.length) return cache;
   if (!faceDetectionAvailable()) {
-    ctx.log("Face detection isn't set up (see README: Vertical framing); crops stay centred", "warn");
+    ctx.log("Face detection isn't set up (run `bun run setup`); crops stay centred", "warn");
     return cache;
   }
   const det = join(dir, "det");

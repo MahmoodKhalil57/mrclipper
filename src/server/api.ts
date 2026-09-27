@@ -1,27 +1,46 @@
-// REST endpoints behind the UI's own controls (the Director reaches the same actions over MCP).
+// REST endpoints behind the canvas. The Director reaches the same steps over MCP (mcp.ts).
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, extname, join } from "node:path";
-import { ApprovalRequired, startAgentPlan, startBrief, startCheck, startCoach, startDesign, startRubric, startWatch, startExtract, startImport, startPlan, startTranscribe } from "./actions";
-import { applyProposal, discardProposal, restoreVersion, versionText } from "./agents/coach";
-import { readBriefCache } from "./agents/plan-jev";
+import { startBrief, startCheck, startCoach, startDesign, startPick, startRefImport, startRefStyle, startRender, startSourceImport, startTranscript } from "./actions";
+import { readBrief } from "./agents/brief";
+import { applyProposal, discardProposal, restoreVersion, versionText } from "./agents/outlines";
+import { addReferenceFile, clearReference, pendingGuide, readReference, setGuide } from "./agents/reference";
+import { readVision } from "./agents/vision";
+import { DATA_DIR, ROOT, VIDEOS_DIR, VIDEO_EXTS, WORKSPACE_CONFIG, WORKSPACE_FIXED } from "./config";
+import { cancelJob, getJob, type Job } from "./jobs";
 import { clearBrowserKey, keyInfo, setBrowserKey } from "./key";
-import { DATA_DIR, ROOT, VIDEO_EXTS, WORKSPACE_CONFIG } from "./config";
-import { cancelJob, getJob } from "./jobs";
-import { readClipData, readTranscript, rel, resolveVideo, runDir, writeClipData } from "./library";
+import { readTranscript, rel, resolveVideo, runDir } from "./library";
+import { adjustClipEdges } from "./agents/take";
 import { run } from "./lib";
-import { readVision, saveAgentLabels } from "./agents/vision";
-import {
-  addComment, addNote, addNudge, deleteComment, setClipRating, deleteNote, feedbackDigest, readNotes, readReview, readSettings, setApproved, setClipStatus,
-  writeSettings,
-} from "./review";
+import { addComment, addNote, deleteComment, deleteNote, feedbackDigest, readNotes, readReview, setApproved, setClipStatus } from "./review";
+import { startWorkflow, workflowState, type NodeId } from "./workflow";
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
-const fail = (e: unknown, status = 400) =>
-  json({ error: e instanceof Error ? e.message : String(e), approval: e instanceof ApprovalRequired }, status);
+const fail = (e: unknown, status = 400) => json({ error: e instanceof Error ? e.message : String(e) }, status);
 
 const THUMBS = join(DATA_DIR, "thumbs");
+
+/** One step of the workflow, started from its node on the canvas. */
+function startStep(b: Record<string, any>): Job {
+  const step = b.step as NodeId;
+  const take = () => {
+    if (!b.take) throw new Error("Pick a take first");
+    return String(b.take);
+  };
+  switch (step) {
+    case "transcript": return startTranscript(String(b.video));
+    case "refstyle": return startRefStyle();
+    case "brief": return startBrief(String(b.video));
+    case "pick": return startPick({ video: String(b.video), notes: b.notes, count: b.count ? Number(b.count) : undefined });
+    case "design": return startDesign(take());
+    case "render": return startRender({ run: take(), only: b.only, force: !!b.force });
+    case "check": return startCheck({ run: take(), only: b.only });
+    case "coach": return startCoach({ video: b.video, direction: b.direction });
+    default: throw new Error(`"${step}" isn't a step you can run`);
+  }
+}
 
 /** Returns a Response for /api/* routes it owns, or null to let the caller continue. */
 export async function handleApi(req: Request, url: URL, path: string): Promise<Response | null> {
@@ -30,11 +49,24 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
   const body = async () => (await req.json().catch(() => ({}))) as Record<string, any>;
 
   try {
-    // ── Sources ──────────────────────────────────────────────────
+    // ── The workflow ───────────────────────────────────────────
+    if (path === "/api/workflow") return json(workflowState(q("video"), q("take") || null));
+    if (path === "/api/run" && m === "POST") {
+      const b = await body();
+      return json({ job_id: startWorkflow({ video: String(b.video ?? ""), take: b.take, notes: b.notes, count: b.count, fresh: !!b.fresh }).id });
+    }
+    if (path === "/api/step" && m === "POST") return json({ job_id: startStep(await body()).id });
+    const cancel = path.match(/^\/api\/jobs\/([\w-]+)\/cancel$/);
+    if (cancel && m === "POST") {
+      if (!getJob(cancel[1])) return fail("Unknown job", 404);
+      return json({ ok: cancelJob(cancel[1]) });
+    }
+
+    // ── 1 · Inputs: source video ───────────────────────────────
     if (path === "/api/upload" && m === "POST") {
       const name = basename(q("name")).replace(/[<>:"|?*\x00-\x1f]/g, "_");
       if (!VIDEO_EXTS.has(extname(name).toLowerCase())) return fail("Only video files (mp4, mkv, webm, mov, m4v)");
-      const dir = join(ROOT, "downloads");
+      const dir = VIDEOS_DIR;
       mkdirSync(dir, { recursive: true });
       const dest = join(dir, name);
       // Stream to disk: source videos are often hundreds of MB.
@@ -43,10 +75,7 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
       await writer.end();
       return json({ video: name, path: rel(dest) });
     }
-    if (path === "/api/import" && m === "POST") {
-      const job = startImport(String((await body()).url ?? "").trim());
-      return json({ job_id: job.id });
-    }
+    if (path === "/api/import" && m === "POST") return json({ job_id: startSourceImport(String((await body()).url ?? "").trim()).id });
     if (path === "/api/thumb") {
       const video = resolveVideo(q("video"));
       const t = Number(q("t") || 60);
@@ -59,32 +88,26 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
       if (!existsSync(out)) return new Response("No frame", { status: 404 });
       return new Response(Bun.file(out), { headers: { "Cache-Control": "max-age=86400" } });
     }
-    // ── WebMCP: the browser agent's write paths ─────────────────
-    if (path === "/api/webmcp/plan" && m === "POST") {
-      const b = await body();
-      return json({ job_id: startAgentPlan({ video: b.video, clips: b.clips, direction: b.direction, agent: b.agent }).id });
+
+    // ── 1 · Inputs: style reference (clip + copy guide) ────────
+    if (path === "/api/reference") {
+      if (m === "DELETE") return json(clearReference());
+      return json({ reference: readReference(), pendingGuide: pendingGuide() });
     }
-    if (path === "/api/webmcp/labels" && m === "POST") {
-      const b = await body();
-      return json(saveAgentLabels(resolveVideo(b.video), Array.isArray(b.labels) ? b.labels : []));
+    if (path === "/api/reference/upload" && m === "POST") {
+      const name = basename(q("name"));
+      if (!VIDEO_EXTS.has(extname(name).toLowerCase())) return fail("Only video files (mp4, mkv, webm, mov, m4v)");
+      return json(await addReferenceFile(name, req.body!));
     }
-    if (path === "/api/feedback") {
-      return new Response(feedbackDigest(resolveVideo(q("video"))) || "No feedback yet.", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
-    }
-    if (path === "/api/webmcp/shots") {
-      const vt = readVision(resolveVideo(q("video")));
-      if (!vt) return fail("No shots yet. Run prepare_video first.");
-      const limit = Math.min(24, Number(q("limit") || 12));
-      const todo = vt.shots.filter((s) => !s.kind && !s.cont).slice(0, limit);
-      return json({ total: vt.shots.length, unlabelled: vt.shots.filter((s) => !s.kind).length, shots: todo });
-    }
-    if (path === "/api/vision") {
-      return json(readVision(resolveVideo(q("video"))) ?? { shots: [] });
-    }
+    if (path === "/api/reference/import" && m === "POST") return json({ job_id: startRefImport(String((await body()).url ?? "").trim()).id });
+    if (path === "/api/reference/guide" && m === "PUT") return json(setGuide(String((await body()).guide ?? "")));
+
+    // ── 2 · Understand: transcript, vision, your notes ─────────
     if (path === "/api/transcript") {
       const video = resolveVideo(q("video"));
       return json({ segments: readTranscript(video) ?? [], notes: readNotes(video) });
     }
+    if (path === "/api/vision") return json(readVision(resolveVideo(q("video"))) ?? { shots: [] });
     if (path === "/api/notes" && m === "POST") {
       const b = await body();
       return json(addNote(resolveVideo(b.video), Number(b.t) || 0, String(b.text ?? "")));
@@ -93,109 +116,33 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
       deleteNote(resolveVideo(q("video")), q("id"));
       return json({ ok: true });
     }
-
-    // ── Jobs: start from the canvas, stop anything ──────────────
-    if (path === "/api/jobs" && m === "POST") {
-      const b = await body();
-      const job =
-        b.agent === "transcribe" ? startTranscribe(b.args) :
-        b.agent === "plan" ? startPlan(b.args) :
-        b.agent === "extract" ? startExtract(b.args) :
-        null;
-      if (!job) return fail(`Unknown agent ${b.agent}`);
-      return json({ job_id: job.id });
-    }
-    const cancel = path.match(/^\/api\/jobs\/([\w-]+)\/cancel$/);
-    if (cancel && m === "POST") {
-      if (!getJob(cancel[1])) return fail("Unknown job", 404);
-      return json({ ok: cancelJob(cancel[1]) });
+    if (path === "/api/feedback") {
+      return new Response(feedbackDigest(resolveVideo(q("video"))) || "No feedback yet.", { headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
 
-    // ── Review: approve, keep/drop, adjust, comment ─────────────
-    const rv = path.match(/^\/api\/runs\/([^/]+)\/(review|approve|comment|check|design|watch|clip\/(\d+))$/);
+    // ── 3 · Brief ──────────────────────────────────────────────
+    if (path === "/api/brief") return json(readBrief(resolveVideo(q("video"))));
+
+    // ── 5 · Review: your verdict per clip, nudges, comments, finish ──
+    const rv = path.match(/^\/api\/takes\/([^/]+)\/(review|finish|comment|clip\/(\d+))$/);
     if (rv) {
-      const runId = rv[1];
-      runDir(runId);
-      if (rv[2] === "review") return json(readReview(runId));
+      const takeId = rv[1];
+      runDir(takeId);
+      if (rv[2] === "review") return json(readReview(takeId));
       const b = await body();
-      if (rv[2] === "check") return json({ job_id: startCheck(runId, b.only).id });
-      if (rv[2] === "design") return json({ job_id: startDesign(runId).id });
-      if (rv[2] === "watch") return json({ job_id: startWatch(runId, !!b.force).id });
-      if (rv[2] === "approve") return json(setApproved(runId, b.approved !== false));
+      if (rv[2] === "finish") return json(setApproved(takeId, b.done !== false));
       if (rv[2] === "comment") {
-        if (m === "DELETE") return json(deleteComment(runId, q("id")));
+        if (m === "DELETE") return json(deleteComment(takeId, q("id")));
         if (!String(b.text ?? "").trim()) return fail("Empty comment");
-        return json(addComment(runId, String(b.text), b.clip == null ? undefined : Number(b.clip), b.by === "agent" ? "agent" : "you"));
+        return json(addComment(takeId, String(b.text), b.clip == null ? undefined : Number(b.clip), b.by === "agent" ? "agent" : "you"));
       }
       const clipId = Number(rv[3]);
-      if ("status" in b) setClipStatus(runId, clipId, b.status ?? undefined);
-      if (b.start != null || b.end != null) addNudge(runId, clipId);
-      if ("rating" in b) setClipRating(runId, clipId, b.rating === 1 || b.rating === -1 ? b.rating : undefined);
-      if ("start" in b || "end" in b || "title" in b || "edit_enabled" in b) {
-        const script = join(runDir(runId), "clip_script.md");
-        const data = readClipData(script);
-        const clip = data.clips.find((c) => c.id === clipId);
-        if (!clip) return fail(`No clip ${clipId}`, 404);
-        const e = clip.edit;
-        if (e && "edit_enabled" in b) e.enabled = b.edit_enabled !== false;
-        if (e?.segments.length && e.enabled !== false && (b.start != null || b.end != null)) {
-          // With an edit, "in" is the first segment that plays and "out" the last one.
-          const first = e.segments[0];
-          const last = e.segments[e.segments.length - 1];
-          if (b.start != null) first.start = Math.max(0, Number(b.start));
-          if (b.end != null) last.end = Number(b.end);
-          if (first.end <= first.start + 0.5 || last.end <= last.start + 0.5) return fail("That would leave a segment shorter than half a second");
-          clip.start = Math.min(...e.segments.map((s) => s.start));
-          clip.end = Math.max(...e.segments.map((s) => s.end));
-        } else {
-          if (b.start != null) clip.start = Math.max(0, Number(b.start));
-          if (b.end != null) clip.end = Number(b.end);
-        }
-        if (b.title) clip.title = String(b.title);
-        if (clip.end <= clip.start + 1) return fail("A clip needs at least a second between start and end");
-        writeClipData(script, data);
-      }
-      return json({ review: readReview(runId) });
+      if ("status" in b) setClipStatus(takeId, clipId, b.status ?? undefined);
+      if ("start" in b || "end" in b || "title" in b || "edit_enabled" in b) adjustClipEdges(takeId, clipId, b);
+      return json({ review: readReview(takeId) });
     }
 
-    // ── Workspace: where videos, transcripts, clips and the outline live ──
-    if (path === "/api/workspace") {
-      if (m === "POST") {
-        // Desktop app only: remember another folder; the server reads its paths at start, so it applies on relaunch.
-        if (!WORKSPACE_CONFIG) return fail("Set CLIP_ROOT to change the workspace when running from source.");
-        const root = String((await body()).root ?? "").trim().replace(/^"|"$/g, "");
-        if (!/^([a-zA-Z]:[\\/]|\\\\|\/)/.test(root)) return fail(String.raw`Use a full folder path, like C:\Users\you\Videos\Clips`);
-        mkdirSync(root, { recursive: true });
-        await Bun.write(WORKSPACE_CONFIG, JSON.stringify({ root }, null, 2));
-        return json({ root, restart: true });
-      }
-      return json({ root: ROOT, data: DATA_DIR, desktop: !!WORKSPACE_CONFIG });
-    }
-    if (path === "/api/workspace/open" && m === "POST") {
-      Bun.spawn(process.platform === "win32" ? ["explorer.exe", ROOT] : [process.platform === "darwin" ? "open" : "xdg-open", ROOT]);
-      return json({ ok: true });
-    }
-
-    // ── OpenRouter key (held in memory; the browser is the source of truth) ──
-    if (path === "/api/key") {
-      if (m === "PUT") return json(await setBrowserKey(String((await body()).key ?? "")));
-      if (m === "DELETE") return json(clearBrowserKey());
-      return json(await keyInfo());
-    }
-
-    // ── Brief and Outline coach (the two LLM nodes around System One) ──
-    if (path === "/api/brief") {
-      if (m === "POST") return json({ job_id: startBrief(String((await body()).video ?? "")).id });
-      return json(readBriefCache(resolveVideo(q("video"))));
-    }
-    if (path === "/api/rubric" && m === "POST") {
-      const b = await body();
-      return json({ job_id: startRubric({ video: b.video, direction: b.direction }).id });
-    }
-    if (path === "/api/coach" && m === "POST") {
-      const b = await body();
-      return json({ job_id: startCoach({ video: b.video, direction: b.direction }).id });
-    }
+    // ── 6 · Learn: the coach's proposals and outline versions ──
     const cp = path.match(/^\/api\/coach\/([\w-]+)\/(apply|discard)$/);
     if (cp && m === "POST") return json(cp[2] === "apply" ? applyProposal(cp[1]) : discardProposal(cp[1]));
     if (path === "/api/outline/version") {
@@ -203,13 +150,35 @@ export async function handleApi(req: Request, url: URL, path: string): Promise<R
       return new Response(versionText(q("hash")), { headers: { "Content-Type": "text/plain; charset=utf-8" } });
     }
 
-    // ── Settings ────────────────────────────────────────────────
-    if (path === "/api/settings") {
-      if (m === "PUT") return json(writeSettings(await body()));
-      return json(readSettings());
+    // ── Workspace and key ──────────────────────────────────────
+    if (path === "/api/workspace") {
+      if (m === "POST") {
+        // Remember another folder (or, when empty, go back to the default). The server reads its paths
+        // at start, so it applies on relaunch.
+        if (WORKSPACE_FIXED) return fail("MRCLIPPER_WORKSPACE is set, and it wins over the folder chosen here.");
+        const root = String((await body()).root ?? "").trim().replace(/^"|"$/g, "");
+        if (!root) {
+          rmSync(WORKSPACE_CONFIG, { force: true });
+          return json({ root: "", restart: true });
+        }
+        if (!/^([a-zA-Z]:[\\/]|\\\\|\/)/.test(root)) return fail(String.raw`Use a full folder path, like C:\Users\you\Videos\Clips`);
+        mkdirSync(root, { recursive: true });
+        await Bun.write(WORKSPACE_CONFIG, JSON.stringify({ root }, null, 2));
+        return json({ root, restart: true });
+      }
+      return json({ root: ROOT, data: DATA_DIR, fixed: WORKSPACE_FIXED });
+    }
+    if (path === "/api/workspace/open" && m === "POST") {
+      Bun.spawn(process.platform === "win32" ? ["explorer.exe", ROOT] : [process.platform === "darwin" ? "open" : "xdg-open", ROOT]);
+      return json({ ok: true });
+    }
+    if (path === "/api/key") {
+      if (m === "PUT") return json(await setBrowserKey(String((await body()).key ?? "")));
+      if (m === "DELETE") return json(clearBrowserKey());
+      return json(await keyInfo());
     }
   } catch (e) {
-    return fail(e, e instanceof ApprovalRequired ? 409 : 400);
+    return fail(e);
   }
   return null;
 }

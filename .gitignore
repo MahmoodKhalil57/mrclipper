@@ -1,9 +1,22 @@
+# Dependencies and build output
 node_modules/
 dist/
-.data/
-.wrangler/
 build/
 artifacts/
+vendor/
+src/desktop/home.gen.ts
+
+# Everything the app writes: workspace, state, downloaded tools (see README)
+.store/
+
+# Local settings (see .env.example)
+.env
+
+# Tool caches
+.wrangler/
 .hutch/
 .cottontail-tmp/
-src/desktop/home.gen.ts
+*.log
+
+# Before the rename (Clipdesk kept its state here)
+.data/

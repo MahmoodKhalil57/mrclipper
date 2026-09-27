@@ -3,20 +3,38 @@
 // The config below is what `wrangler dev` would set up for wrangler.jsonc: the prebuilt bundle,
 // the Director Durable Object with SQLite storage on local disk, and outbound network access
 // (OpenRouter over TLS, and this app's MCP servers on 127.0.0.1).
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { APP_DIR } from "./config";
 
-/** The bundled binary in the desktop app, or the one wrangler installed for development. */
+/** workerd's per-platform npm packages (the same table the `workerd` package uses). */
+const WORKERD_PACKAGES: Record<string, string> = {
+  "darwin arm64": "@cloudflare/workerd-darwin-arm64",
+  "darwin x64": "@cloudflare/workerd-darwin-64",
+  "linux arm64": "@cloudflare/workerd-linux-arm64",
+  "linux x64": "@cloudflare/workerd-linux-64",
+  "win32 x64": "@cloudflare/workerd-windows-64",
+  "win32 arm64": "@cloudflare/workerd-windows-64",
+};
+
+/** The binary bundled with the desktop app, or the one `bun install` put in node_modules for this platform. */
 export function workerdBinary(): string | null {
-  return [
-    join(APP_DIR, "runtime", "workerd.exe"),
-    join(APP_DIR, "node_modules", "@cloudflare", "workerd-windows-64", "bin", "workerd.exe"),
-    join(APP_DIR, "node_modules", "@cloudflare", "workerd-linux-64", "bin", "workerd"),
-    join(APP_DIR, "node_modules", "@cloudflare", "workerd-darwin-arm64", "bin", "workerd"),
-    join(APP_DIR, "node_modules", "@cloudflare", "workerd-darwin-64", "bin", "workerd"),
-  ].find(existsSync) ?? null;
+  const exe = process.platform === "win32" ? "workerd.exe" : "workerd";
+  const bundled = join(APP_DIR, "runtime", exe);
+  if (existsSync(bundled)) return bundled;
+  const pkg = WORKERD_PACKAGES[`${process.platform} ${process.arch}`];
+  if (!pkg) return null;
+  try {
+    const bin = join(dirname(Bun.resolveSync(`${pkg}/package.json`, APP_DIR)), "bin", exe);
+    return existsSync(bin) ? bin : null;
+  } catch {
+    return null;
+  }
 }
+
+/** The Director namespace's storage key: its folder under do/. Kept short, like do/ itself: see the
+ *  path-length check in writeWorkerdConfig. */
+const DIRECTOR_KEY = "director";
 
 const EMAIL_INTERNAL = `class EmailMessage {
   constructor(from, to, raw) { this.from = from; this.to = to; this.raw = raw; }
@@ -41,8 +59,17 @@ function compat(): { date: string; flags: string[] } {
 
 /** Write the workerd config (and a copy of the bundle next to it) into `dir`; returns the config path. */
 export function writeWorkerdConfig(p: { bundle: string; dir: string; port: number; vars: Record<string, string> }): string {
-  const storage = join(p.dir, "durable-objects");
+  const storage = join(p.dir, "do");
   mkdirSync(storage, { recursive: true });
+  // The app was called Clipdesk, and kept the Director's conversations in durable-objects/clipdesk-director.
+  const old = join(p.dir, "durable-objects", "clipdesk-director");
+  if (existsSync(old) && !existsSync(join(storage, DIRECTOR_KEY))) renameSync(old, join(storage, DIRECTOR_KEY));
+  // Each Director conversation is a SQLite file named by a 64-character id, and SQLite on Windows can't
+  // open a path over 259 characters (it fails with SQLITE_CANTOPEN). Its longest is the rollback journal.
+  const longest = join(storage, DIRECTOR_KEY, `${"0".repeat(64)}.sqlite-journal`).length;
+  if (process.platform === "win32" && longest > 259) {
+    console.warn(`  The Director's storage path is ${longest} characters, over Windows' 260 limit, so its chat won't work.\n  Move this folder somewhere with a shorter path, or set MRCLIPPER_DATA to a short folder.`);
+  }
   copyFileSync(p.bundle, join(p.dir, "director.js"));
   // `cloudflare:email` (pulled in by the agents SDK, unused here) needs this internal module, which
   // wrangler's Miniflare normally supplies. Same shape as Miniflare's.
@@ -68,7 +95,7 @@ const director :Workerd.Worker = (
 ${Object.entries(p.vars).map(([k, v]) => `    (name = ${str(k)}, text = ${str(v)}),`).join("\n")}
     (name = "Director", durableObjectNamespace = "Director"),
   ],
-  durableObjectNamespaces = [(className = "Director", uniqueKey = "clipdesk-director", enableSql = true)],
+  durableObjectNamespaces = [(className = "Director", uniqueKey = ${str(DIRECTOR_KEY)}, enableSql = true)],
   durableObjectStorage = (localDisk = "do-disk"),
   globalOutbound = "internet",
 );

@@ -71,7 +71,7 @@ function Empty() {
     <div className="empty dock-empty">
       <h1>Ask, or just <em>drive</em>.</h1>
       <p>
-        The canvas runs everything by itself: press ▶ on a node. Talk to the Director when you'd rather say what you want,
+        The canvas runs everything by itself: press ▶ Run, or ▶ on a single node. Talk to the Director when you'd rather say what you want,
         like "plan 3 funny clips under a minute" or "why is clip 2 so long?". It calls the same crew and the canvas updates as it works.
       </p>
       <p className="faint">
@@ -158,7 +158,7 @@ function Slate({ name, part, jobsById, onFocusJob }: {
   return (
     <div className={`slate ${agent ?? ""}`}>
       <button className="slate-head" onClick={() => setOpen(!open)} aria-expanded={open}>
-        <span className="slate-agent">{agent ? AGENT_LABEL[agent as AgentKey] : "tool"}</span>
+        <span className="slate-agent">{agent ? AGENT_LABEL[agent] : "tool"}</span>
         <span className="slate-tool">{tool}</span>
         <span className="slate-args" dir="auto">{argSummary(part.input)}</span>
         <span className={`slate-state ${failed ? "err" : out ? "done" : ""}`}>
@@ -259,25 +259,13 @@ type Chip = { label: string; target: string; text: string; agent: AgentKey | "di
 function suggestions(lib: Library | null): Chip[] {
   if (!lib) return [];
   const out: Chip[] = [];
-  const untranscribed = lib.videos.find((v) => !v.transcript);
-  const unplanned = lib.videos.find((v) => v.transcript && v.runs.length === 0);
-  const uncut = lib.runs.find((r) => r.clips.some((c) => !c.file));
+  const fresh = lib.videos.find((v) => !v.transcript || v.runs.length === 0);
   const latest = lib.videos.find((v) => v.transcript) ?? lib.videos[0];
-
-  if (untranscribed) {
-    const n = shortName(untranscribed.stem);
-    out.push({ label: "Transcribe", target: n, text: `Transcribe "${untranscribed.name}".`, agent: "transcribe" });
-  }
-  if (unplanned) {
-    const n = shortName(unplanned.stem);
-    out.push({ label: "Plan", target: n, text: `Plan clips for "${unplanned.name}" using the outline.`, agent: "plan" });
-  }
-  if (latest) {
-    out.push({ label: "New take", target: shortName(latest.stem), text: `Plan a fresh set of clips for "${latest.name}" that avoids moments we've already used.`, agent: "plan" });
-  }
-  if (uncut) {
-    out.push({ label: "Cut", target: `run ${uncut.created}`, text: `Extract the clips from run "${uncut.id}" with captions.`, agent: "extract" });
-  }
-  out.push({ label: "Review", target: "what worked before", text: "Summarise the clip history: what we've cut so far and any performance notes.", agent: "director" });
+  const pending = lib.outlines?.pending;
+  if (fresh) out.push({ label: "Run", target: shortName(fresh.stem), text: `Run the workflow for "${fresh.name}" and tell me when the clips are ready for review.`, agent: "plan" });
+  if (latest) out.push({ label: "New take", target: shortName(latest.stem), text: `Make a new take of "${latest.name}" that avoids moments we've already used.`, agent: "plan" });
+  if (latest) out.push({ label: "Explain", target: "the workflow", text: `Where is "${latest.name}" in the workflow, and what would Run do next?`, agent: "plan" });
+  if (pending) out.push({ label: "Proposal", target: "the coach's", text: "Explain the coach's pending outline proposal: what it changes and why.", agent: "plan" });
+  out.push({ label: "History", target: "what worked", text: "Summarise the clip history: what we've made so far and any performance notes.", agent: "director" });
   return out.slice(0, 5);
 }

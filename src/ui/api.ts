@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { pushStoredKey } from "./Key";
 
+/** The three MCP crew servers (Director tool calls are labelled by them). */
 export type AgentKey = "transcribe" | "plan" | "extract";
-export type JobAgent = AgentKey | "import" | "design" | "brief" | "watch" | "rubric" | "coach";
+/** Job kinds, named after the canvas nodes they belong to; "workflow" is ▶ Run. */
+export type JobAgent = "source" | "refclip" | "transcript" | "refstyle" | "brief" | "pick" | "design" | "render" | "check" | "coach" | "workflow";
 
 export type Job = {
   id: string;
@@ -20,7 +22,25 @@ export type Job = {
   finishedAt?: number;
 };
 
-export type Comment = { id: string; text: string; at: number };
+// ── The workflow (computed by the server, workflow.ts) ───────────────
+
+export type NodeId = "source" | "outline" | "refclip" | "guide" | "transcript" | "refstyle" | "brief" | "pick" | "design" | "render" | "check" | "review" | "coach";
+export type NodeState = "empty" | "optional" | "locked" | "ready" | "stale" | "running" | "waiting" | "done" | "failed" | "stopped";
+export type Who = "you" | "transcriber" | "llm" | "jev" | "code";
+export type WfNode = { id: NodeId; phase: number; who: Who; state: NodeState; reason?: string; facts: [string, string][]; job?: string; cost?: number };
+export type TakeRef = { id: string; created: string; current: boolean; reviewed: boolean; score: number | null; clips: number };
+export type Workflow = {
+  video: string; stem: string;
+  take: TakeRef | null; takes: TakeRef[];
+  nodes: Record<NodeId, WfNode>;
+  plan: NodeId[];
+  next: { node: NodeId; text: string };
+  run: string | null;
+};
+
+// ── Artifacts ────────────────────────────────────────────────────────
+
+export type Comment = { id: string; text: string; at: number; by?: "you" | "agent" };
 export type Note = Comment & { t: number };
 export type Review = {
   approved: boolean;
@@ -41,85 +61,91 @@ export type ClipWatch = {
   metrics: { script_match: number | null; faces_ok: number | null; cut_off: number; captions_ok: number | null; framing_ok: number | null };
 };
 export type Clip = { id: number; title: string; start: number; end: number; on_screen_text?: string; reason?: string; file: string | null; edit?: ClipEdit; watch?: ClipWatch | null };
-export type Engine = "classic" | "hybrid" | "jev" | "webmcp";
-export type JevScores = {
-  overall: number; hook: number; cold: number; payoff: number; complete: number; fit: number;
-  standalone: number; respectful: number; tone: { key: string; p: number }; direction?: number; against?: number; repeat?: boolean;
-  visual?: number; vertical?: number;
-  /** Every question the brief asked, in order (Hybrid briefs have their own questions). */
-  rows?: { key: string; label: string; value: number }[];
-};
+
 export type BriefQuestion = { key: string; label: string; type: "noul" | "score"; instructions: string; criteria?: string[]; weight: number };
-export type JevBrief = {
+export type CheckRule = { key: string; section: string; rule: string; question: string };
+export type Brief = {
   source: "default" | "llm"; model?: string; summary: string;
-  opener: BriefQuestion[]; ending: BriefQuestion[]; window: BriefQuestion[];
-  tones: Record<string, string>; preferredTones: string[]; gates: { key: string; min: number }[];
-  zoomGuide: Record<string, string>; transitionGuide: Record<string, string>;
+  pick: { opener: BriefQuestion[]; ending: BriefQuestion[]; window: BriefQuestion[]; tones: Record<string, string>; preferredTones: string[]; gates: { key: string; min: number }[] };
+  design: { zoomGuide: Record<string, string>; transitionGuide: Record<string, string>; titleGuide: string };
+  check: CheckRule[];
 };
-export type DesignRun = {
-  at: number; mode: "hybrid" | "jev"; guide: "llm" | "standard"; cost: number;
-  clips: Record<string, {
-    zooms: { piece: number; zoom: string; p: number; options: Record<string, number>; flashback?: number; varied?: boolean; ending?: boolean }[];
-    transitions: { gap: number; transition: string; p: number; options: Record<string, number> }[];
-    titles?: "llm";
-  }>;
+export type BriefFile = { at: number; inputs: string; outline_hash: string; reference: string; cost: number; brief: Brief };
+export type PickScores = {
+  overall: number; tone: { key: string; p: number }; rows?: { key: string; label: string; value: number }[];
+  direction?: number; against?: number; repeat?: boolean; visual?: number; vertical?: number;
 };
-export type JevRun = {
+export type PickRun = {
   model: string; direction: string | null;
   stats: { calls: number; cost: number; openers: number; endings: number; candidates: number; eligible: number };
-  clips: Record<string, JevScores>;
-  brief?: JevBrief;
+  clips: Record<string, PickScores>;
+  brief?: Brief | Record<string, unknown>;
   alternatives: { start: number; end: number; overall: number; tone: string; opening: string }[];
+};
+export type DesignRun = {
+  at: number; cost: number; guide?: "llm" | "standard";
+  clips: Record<string, {
+    zooms: { piece: number; zoom: string; p: number; options: Record<string, number>; flashback?: number; varied?: boolean; ending?: boolean; ending_p?: number }[];
+    transitions: { gap: number; transition: string; p: number; options: Record<string, number> }[];
+    hook?: { chosen: string; p: number; options: Record<string, number>; texts: Record<string, string> };
+    emphasis?: { w: string; p: number; kept: boolean }[];
+  }>;
 };
 export type EdgeCheck = {
   start: number; end: number; start_clean: number; end_clean: number; standalone: number;
   suggest_start?: { t: number; p: number; line: string }; suggest_end?: { t: number; p: number; line: string };
 };
+export type CheckRun = {
+  at: number; model: string; cost: number; rules: CheckRule[];
+  clips: Record<string, { mtime: number; at: number; watched: boolean; rules: Record<string, number>; followed: number; edges: EdgeCheck | null }>;
+};
 export type Run = {
   id: string; videoStem: string; created: string; script: string; aspect?: string; clips: Clip[]; review: Review;
-  engine: Engine; jev: JevRun | null; qa: { checkedAt: number; model: string; clips: Record<string, EdgeCheck> } | null;
-  design: DesignRun | null;
+  jev: PickRun | null; design: DesignRun | null; check: CheckRun | null;
+  info: { video: string; created: number; notes?: string; inputs: { outline: string; reference: string; brief: string } } | null;
 };
 export type Video = {
   name: string; stem: string; path: string; size: number; duration: number;
   transcript: { segments: number; path: string; aligned?: number } | null;
   vision: { shots: number; labelled: number; model: string } | null;
   runs: string[];
-  /** The Brief node's cached output (Hybrid). fresh = compiled from the current outline. */
-  brief: { at: number; fresh: boolean; source: "default" | "llm"; model?: string; questions: number; cost: number } | null;
 };
-export type Settings = { requireApproval: boolean; engine: Engine };
 export type Proposal = {
   id: string; at: number; status: "proposed" | "applied" | "discarded"; parent: string; hash: string; outline: string;
   changes: { section: string; change: string; evidence: string }[];
-  hypothesis: string; keep: string; warnings: string[]; takes: string[]; direction?: string; model: string; cost: number;
-  mode?: "llm" | "jev" | "hybrid"; scorecard?: string;
+  hypothesis: string; keep: string; warnings: string[]; takes: string[]; direction?: string; model: string; cost: number; scorecard?: string;
 };
 export type OutlineVersion = {
   hash: string; at: number; source: "user" | "coach"; parent?: string; proposal?: string;
   label: string; takes: number; rated: number; mean: number | null;
 };
-export type Rubric = {
-  source: "llm" | "default"; model?: string; at: number; outline_hash: string; cost: number; diagnosis: string; fresh: boolean;
-  rules: { key: string; section: string; rule: string; question: string }[];
-  sections: { section: string; why: string; variants: { key: string; summary: string; text: string }[] }[];
-};
 export type Scorecard = {
-  id: string; at: number; mode: "jev" | "hybrid"; outline_hash: string; rubric_source: "llm" | "default"; cost: number; calls: number; diagnosis: string;
+  id: string; at: number; outline_hash: string; cost: number; calls: number; diagnosis: string;
   rules: { key: string; section: string; rule: string; followed: number; good: number | null; bad: number | null; n: number }[];
-  clips: { run: string; clip: number; title: string; reward: number | null; watched: boolean; answers: Record<string, number> }[];
   decisions: { section: string; chosen: string; summary: string; p: number; options: Record<string, number>; applied: boolean }[];
   proposal?: string;
 };
-export type CoachState = {
+export type OutlineState = {
   current: string; versions: OutlineVersion[];
   outcomes: Record<string, { score: number | null; hash: string | null }>;
   pending: Proposal | null; proposals: Omit<Proposal, "outline">[];
-  rubric: Rubric | null; scorecard: Scorecard | null;
+  scorecard: Scorecard | null; lastCoach: number;
+};
+export type RefTrait = { key: string; section: string; trait: string; question: string };
+export type Reference = {
+  id: string; name: string; file: string; source?: string; at: number; guide: string;
+  analysis?: {
+    at: number; guide: string; model: string; cost: number; duration: number; analysed: number; width: number; height: number;
+    shots: number; avg_shot: number; cuts_per_min: number; words_per_min: number; pauses: number; transcript: string;
+    frames: { t: number; frame: string; faces: number }[];
+    profile: Record<"summary" | "pacing" | "structure" | "captions" | "framing" | "color" | "effects" | "transitions" | "title" | "audio", string> & { traits: RefTrait[] };
+  };
 };
 export type Library = {
   root: string; videos: Video[]; runs: Run[]; outline: string;
-  history: { path: string; text: string }[]; settings: Settings; coach: CoachState;
+  history: { path: string; text: string }[];
+  outlines: OutlineState;
+  reference: Reference | null; pendingGuide: string;
 };
 export type KeyInfo = { set: boolean; source: "browser" | "env" | null; label?: string; usage?: number; limit?: number | null; verified?: boolean };
 export type Status = {
@@ -133,7 +159,6 @@ export type Shot = {
   id: number; start: number; end: number; cont?: boolean; frame: string;
   kind?: string; desc?: string; text?: string; subject_x?: number; people?: number;
 };
-
 export type SysEntry = { t: number; level: "info" | "warn" | "error"; msg: string };
 export type Segment = {
   start: number; end: number; text: string;
@@ -150,7 +175,7 @@ export async function getJSON<T>(url: string): Promise<T> {
   return r.json();
 }
 
-/** JSON request that throws the server's error message (and flags review-gate refusals). */
+/** JSON request that throws the server's error message. */
 export async function call<T = any>(url: string, method = "POST", body?: unknown): Promise<T> {
   const r = await fetch(url, {
     method,
@@ -158,7 +183,7 @@ export async function call<T = any>(url: string, method = "POST", body?: unknown
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data: any = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(new Error(data.error || `Request failed (${r.status})`), { approval: !!data.approval });
+  if (!r.ok) throw new Error(data.error || `Request failed (${r.status})`);
   return data;
 }
 
@@ -167,40 +192,47 @@ export async function putText(url: string, body: string) {
   if (!r.ok) throw new Error((await r.text()) || `Save failed (${r.status})`);
 }
 
+const T = (take: string) => `/api/takes/${encodeURIComponent(take)}`;
+export type StepArgs = { video?: string; take?: string; notes?: string; count?: number; only?: number[]; force?: boolean; direction?: string };
+
 export const actions = {
-  start: (agent: AgentKey, args: Record<string, unknown>) => call<{ job_id: string }>("/api/jobs", "POST", { agent, args }),
+  // The workflow
+  workflow: (video: string, take?: string | null) => getJSON<Workflow>(`/api/workflow?video=${encodeURIComponent(video)}${take ? `&take=${encodeURIComponent(take)}` : ""}`),
+  run: (video: string, take?: string | null, notes?: string, fresh = false) => call<{ job_id: string }>("/api/run", "POST", { video, take: take ?? undefined, notes, fresh }),
+  step: (step: NodeId, args: StepArgs) => call<{ job_id: string }>("/api/step", "POST", { step, ...args }),
   cancel: (id: string) => call(`/api/jobs/${id}/cancel`),
+  // Inputs
   importUrl: (url: string) => call<{ job_id: string }>("/api/import", "POST", { url }),
-  approve: (run: string, approved = true) => call(`/api/runs/${encodeURIComponent(run)}/approve`, "POST", { approved }),
-  clip: (run: string, id: number, patch: { status?: "keep" | "drop" | null; start?: number; end?: number; title?: string; edit_enabled?: boolean; rating?: 1 | -1 | null }) =>
-    call(`/api/runs/${encodeURIComponent(run)}/clip/${id}`, "POST", patch),
-  comment: (run: string, text: string, clip?: number) => call(`/api/runs/${encodeURIComponent(run)}/comment`, "POST", { text, clip }),
-  uncomment: (run: string, id: string) => call(`/api/runs/${encodeURIComponent(run)}/comment?id=${id}`, "DELETE"),
+  refImport: (url: string) => call<{ job_id: string }>("/api/reference/import", "POST", { url }),
+  refGuide: (guide: string) => call("/api/reference/guide", "PUT", { guide }),
+  refClear: () => call("/api/reference", "DELETE"),
+  // Understand
+  vision: (video: string) => getJSON<{ shots: Shot[]; model?: string }>(`/api/vision?video=${encodeURIComponent(video)}`),
+  transcript: (video: string) => getJSON<{ segments: Segment[]; notes: Note[] }>(`/api/transcript?video=${encodeURIComponent(video)}`),
   note: (video: string, t: number, text: string) => call<Note>("/api/notes", "POST", { video, t, text }),
   unnote: (video: string, id: string) => call(`/api/notes?video=${encodeURIComponent(video)}&id=${id}`, "DELETE"),
-  keyInfo: () => getJSON<KeyInfo>("/api/key"),
-  setKey: (key: string) => call<KeyInfo>("/api/key", "PUT", { key }),
-  clearKey: () => call<KeyInfo>("/api/key", "DELETE"),
-  settings: (patch: Partial<Settings>) => call<Settings>("/api/settings", "PUT", patch),
-  briefOf: (video: string) => getJSON<{ at: number; cost: number; brief: JevBrief } | null>(`/api/brief?video=${encodeURIComponent(video)}`),
-  brief: (video: string) => call<{ job_id: string }>("/api/brief", "POST", { video }),
-  coach: (video: string, direction?: string) => call<{ job_id: string }>("/api/coach", "POST", { video, direction }),
-  watch: (run: string, force = false) => call<{ job_id: string }>(`/api/runs/${encodeURIComponent(run)}/watch`, "POST", { force }),
-  rubric: (video: string, direction?: string) => call<{ job_id: string }>("/api/rubric", "POST", { video, direction }),
+  // Brief
+  briefOf: (video: string) => getJSON<BriefFile | null>(`/api/brief?video=${encodeURIComponent(video)}`),
+  // Review
+  clip: (take: string, id: number, patch: { status?: "keep" | "drop" | null; start?: number; end?: number; title?: string; edit_enabled?: boolean }) => call(`${T(take)}/clip/${id}`, "POST", patch),
+  finish: (take: string, done = true) => call(`${T(take)}/finish`, "POST", { done }),
+  comment: (take: string, text: string, clip?: number) => call(`${T(take)}/comment`, "POST", { text, clip }),
+  uncomment: (take: string, id: string) => call(`${T(take)}/comment?id=${id}`, "DELETE"),
+  // Learn
   applyProposal: (id: string) => call(`/api/coach/${id}/apply`),
   discardProposal: (id: string) => call(`/api/coach/${id}/discard`),
   restoreVersion: (hash: string) => call("/api/outline/version", "POST", { hash }),
-  design: (run: string) => call<{ job_id: string }>(`/api/runs/${encodeURIComponent(run)}/design`, "POST", {}),
-  check: (run: string, only?: number[]) => call<{ job_id: string }>(`/api/runs/${encodeURIComponent(run)}/check`, "POST", { only }),
-  vision: (video: string) => getJSON<{ shots: Shot[]; model?: string }>(`/api/vision?video=${encodeURIComponent(video)}`),
-  transcript: (video: string) => getJSON<{ segments: Segment[]; notes: Note[] }>(`/api/transcript?video=${encodeURIComponent(video)}`),
+  // Key
+  keyInfo: () => getJSON<KeyInfo>("/api/key"),
+  setKey: (key: string) => call<KeyInfo>("/api/key", "PUT", { key }),
+  clearKey: () => call<KeyInfo>("/api/key", "DELETE"),
 };
 
 /** Upload with progress. XHR because fetch can't report upload progress. */
-export function uploadVideo(file: File, onProgress: (p: number) => void): Promise<{ video: string }> {
+export function uploadVideo(file: File, onProgress: (p: number) => void, endpoint = "/api/upload"): Promise<{ video: string }> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", `/api/upload?name=${encodeURIComponent(file.name)}`);
+    xhr.open("POST", `${endpoint}?name=${encodeURIComponent(file.name)}`);
     xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
     xhr.onload = () => {
       const data = JSON.parse(xhr.responseText || "{}");
@@ -211,19 +243,22 @@ export function uploadVideo(file: File, onProgress: (p: number) => void): Promis
   });
 }
 
-/** Live studio state: server status, library on disk, jobs and system log over SSE. */
+/** Live studio state: server status, the workspace on disk, jobs and the system log over SSE. */
 export function useStudio() {
   const [status, setStatus] = useState<Status | null>(null);
   const [library, setLibrary] = useState<Library | null>(null);
   const [jobs, setJobs] = useState<Job[]>([]);
   const [sys, setSys] = useState<SysEntry[]>([]);
   const [online, setOnline] = useState(true);
+  // Bumped on every library refresh, so views that fetch their own data (the workflow) follow along.
+  const [version, setVersion] = useState(0);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const refreshStatus = useCallback(() => getJSON<Status>("/api/status").then(setStatus).catch(() => {}), []);
   const refresh = useCallback(async () => {
     try {
       setLibrary(await getJSON<Library>("/api/library"));
+      setVersion((v) => v + 1);
     } catch {}
   }, []);
 
@@ -258,7 +293,7 @@ export function useStudio() {
           next[i] = job;
           return next;
         });
-        // Artifacts land on disk as jobs progress (chunks, clips), so rescan on every change.
+        // Artifacts land on disk as jobs progress, so rescan on every change.
         refreshSoon();
       } else if (ev.type === "sys") {
         setSys((prev) => [...prev.slice(-299), ev.entry]);
@@ -268,5 +303,19 @@ export function useStudio() {
     return () => es.close();
   }, [refresh, refreshSoon]);
 
-  return { status, library, jobs, sys, online, refresh, refreshStatus };
+  return { status, library, jobs, sys, online, refresh, refreshStatus, version };
+}
+
+/** The workflow for one video and take, refetched whenever the workspace changes. */
+export function useWorkflow(video: string | null, take: string | null, version: number) {
+  const [wf, setWf] = useState<Workflow | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const seq = useRef(0);
+  const load = useCallback(() => {
+    if (!video) return setWf(null);
+    const n = ++seq.current;
+    actions.workflow(video, take).then((w) => n === seq.current && (setWf(w), setError(null))).catch((e) => n === seq.current && setError(String(e.message ?? e)));
+  }, [video, take]);
+  useEffect(load, [load, version]);
+  return { wf, error, reload: load };
 }

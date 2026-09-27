@@ -1,17 +1,16 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, extname, join, parse, relative, resolve, sep } from "node:path";
-import { ROOT, VIDEO_EXTS } from "./config";
+import { ROOT, VIDEOS_DIR, VIDEO_EXTS } from "./config";
 import { probeDuration, type Segment } from "./lib";
 import { readVision } from "./agents/vision";
-import { createHash } from "node:crypto";
-
-const hashText = (t: string) => createHash("sha1").update(t.replace(/\r\n/g, "\n").trim()).digest("hex").slice(0, 12);
 
 export const OUTLINE_FILE = join(ROOT, "clip_outline.md");
 export const CLIPS_DIR = join(ROOT, "clips");
 export const TRANSCRIPTS_DIR = join(ROOT, "transcripts");
 
 export const rel = (p: string) => relative(ROOT, p).split(sep).join("/");
+/** A path as stored in the workspace's own files: relative when it's inside the workspace, so the workspace can move. */
+const stored = (p: string) => (resolve(ROOT, p).startsWith(ROOT + sep) ? rel(resolve(ROOT, p)) : p);
 
 /** Resolve a user-supplied path inside ROOT, refusing anything that escapes it. */
 export function safePath(p: string): string {
@@ -41,11 +40,14 @@ async function cachedDuration(path: string) {
   return duration;
 }
 
+/** One entry per file name: transcripts and takes are keyed by the name, so a copy elsewhere is the same video.
+ *  New videos go to videos/; older workspaces also keep them at the top level and in downloads/. */
 function videoFiles(): string[] {
-  const dirs = [ROOT, join(ROOT, "downloads")];
+  const dirs = [VIDEOS_DIR, ROOT, join(ROOT, "downloads")];
+  const seen = new Set<string>();
   return dirs.flatMap((d) =>
     existsSync(d)
-      ? readdirSync(d).filter((f) => VIDEO_EXTS.has(extname(f).toLowerCase())).map((f) => join(d, f))
+      ? readdirSync(d).filter((f) => VIDEO_EXTS.has(extname(f).toLowerCase()) && !seen.has(f) && !!seen.add(f)).map((f) => join(d, f))
       : [],
   );
 }
@@ -72,7 +74,6 @@ export function readTranscript(video: string): Segment[] | null {
 }
 
 export async function listVideos() {
-  const outlineHash = hashText(readText(OUTLINE_FILE));
   return Promise.all(
     videoFiles().map(async (path) => {
       const segs = readTranscript(path);
@@ -95,21 +96,29 @@ export async function listVideos() {
           return vt ? { shots: vt.shots.length, labelled: vt.shots.filter((s) => s.kind).length, model: vt.model } : null;
         })(),
         runs: listRuns().filter((r) => r.videoStem === parse(path).name).map((r) => r.id),
-        // The Brief node's cached output (Hybrid) and whether it matches the current outline.
-        brief: (() => {
-          const b = readJsonFile(join(transcriptDir(path), "jev_brief.json"));
-          return b?.brief ? { at: b.at, fresh: b.outline_hash === outlineHash, source: b.brief.source, model: b.brief.model, questions: b.brief.opener.length + b.brief.ending.length + b.brief.window.length, cost: b.cost ?? 0 } : null;
-        })(),
       };
     }),
   );
+}
+
+/** A take's source video. It's stored relative to the workspace (older takes stored it absolute); if it isn't
+ *  there any more (the workspace or the video moved), it's found by its file name. */
+function takeVideo(p: string): string {
+  const full = resolve(ROOT, p);
+  if (existsSync(full)) return full;
+  try {
+    return resolveVideo(basename(p));
+  } catch {
+    return full;
+  }
 }
 
 export function readClipData(scriptPath: string): ClipData {
   const text = readFileSync(scriptPath, "utf8");
   const m = text.match(/<!-- clip-data -->\s*```json\s*([\s\S]*?)```/);
   if (!m) throw new Error(`No clip-data JSON block in ${rel(scriptPath)}`);
-  return JSON.parse(m[1]);
+  const data: ClipData = JSON.parse(m[1]);
+  return { ...data, video: takeVideo(data.video) };
 }
 
 /** Rewrite only the machine-readable block, leaving the human-readable sections alone. */
@@ -117,7 +126,7 @@ export function writeClipData(scriptPath: string, data: ClipData) {
   const text = readFileSync(scriptPath, "utf8");
   const next = text.replace(
     /(<!-- clip-data -->\s*```json\s*)[\s\S]*?(```)/,
-    (_, a, b) => `${a}${JSON.stringify(data, null, 2)}\n${b}`,
+    (_, a, b) => `${a}${JSON.stringify({ ...data, video: stored(data.video) }, null, 2)}\n${b}`,
   );
   writeFileSync(scriptPath, next, "utf8");
 }
@@ -148,10 +157,11 @@ export function listRuns() {
           : new Date(statSync(script).mtimeMs).toISOString().slice(0, 16).replace("T", " "),
         script: rel(script),
         aspect: data?.aspect,
-        // Sidecars from the planner/editor engines (engine.json, jev.json scores, jev_qa.json checks).
+        // Sidecars from the workflow steps: jev.json (Pick), design.json (Design), check.json (Check), take.json.
         engine: readJsonFile(join(dir, "engine.json"))?.engine ?? "classic",
         jev: readJsonFile(join(dir, "jev.json")),
-        qa: readJsonFile(join(dir, "jev_qa.json")),
+        check: readJsonFile(join(dir, "check.json")),
+        info: readJsonFile(join(dir, "take.json")),
         design: readJsonFile(join(dir, "design.json")),
         clips: (data?.clips ?? []).map((c) => {
           const file = join(dir, `clip_${String(c.id).padStart(2, "0")}.mp4`);

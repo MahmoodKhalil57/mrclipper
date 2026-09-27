@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "clipdesk",
+      "name": "mrclipper",
       "dependencies": {
         "@ai-sdk/react": "^4.0.117",
         "@cloudflare/ai-chat": "^0.12.0",

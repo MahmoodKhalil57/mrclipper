@@ -1,6 +1,6 @@
 {
-  // Used only to bundle the Think worker (`wrangler deploy --dry-run`); Bun runs it in Miniflare.
-  "name": "clipdesk-director",
+  // Used only to bundle the Director (`wrangler deploy --dry-run`, run with Bun); the server runs it on workerd.
+  "name": "mrclipper-director",
   "main": "src/worker/director.ts",
   "compatibility_date": "2026-09-25",
   "compatibility_flags": ["nodejs_compat"],
